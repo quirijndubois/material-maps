@@ -500,6 +500,8 @@ fun MapScreen() {
                 isLogoEnabled = false
                 // We draw our own compass so it can sit below the search bar.
                 isCompassEnabled = false
+                // Credits (including the map's attribution) live behind our own button.
+                isAttributionEnabled = false
             }
             m.addOnCameraMoveListener {
                 bearing = m.cameraPosition.bearing.toFloat()
@@ -574,11 +576,6 @@ fun MapScreen() {
             }
         }
         onDispose { mapView.removeOnDidFailLoadingMapListener(failListener) }
-    }
-
-    // Insets aren't known on the first frame, so keep the attribution margin up to date.
-    LaunchedEffect(map, bottomInsetPx) {
-        map?.uiSettings?.setAttributionMargins(dp(12), 0, 0, bottomInsetPx + dp(4))
     }
 
     // Show the blue dot and follow the user when asked.
@@ -855,6 +852,16 @@ fun MapScreen() {
 
     Box(Modifier.fillMaxSize()) {
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+
+        var showCredits by rememberSaveable { mutableStateOf(false) }
+        CreditsButton(
+            onClick = { showCredits = true },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .navigationBarsPadding()
+                .padding(start = 4.dp, bottom = 4.dp),
+        )
+        if (showCredits) CreditsSheet(onDismiss = { showCredits = false })
 
         AnimatedVisibility(
             visible = compassVisible,

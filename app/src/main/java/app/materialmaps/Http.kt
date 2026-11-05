@@ -13,7 +13,7 @@ internal suspend fun httpGet(url: String): String = withContext(Dispatchers.IO) 
     try {
         connection.connectTimeout = 10_000
         connection.readTimeout = 15_000
-        connection.setRequestProperty("User-Agent", "MaterialMaps/0.1 (Android)")
+        connection.setRequestProperty("User-Agent", USER_AGENT)
         val code = connection.responseCode
         if (code !in 200..299) {
             val body = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()

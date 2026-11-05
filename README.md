@@ -54,7 +54,7 @@ The signing key in `keystore/` is committed on purpose, so every build (local or
 
 ## How it's built
 
-Kotlin, Jetpack Compose, Material 3 and the MapLibre Android SDK. There's no other networking or JSON library: plain `HttpURLConnection` and `org.json`.
+Kotlin, Jetpack Compose, Material 3 and the MapLibre Android SDK. There's no other networking or JSON library: plain `HttpURLConnection` and `org.json`. [AboutLibraries](https://github.com/mikepenz/AboutLibraries) generates the license list at build time.
 
 | File | What it does |
 | --- | --- |
@@ -65,6 +65,7 @@ Kotlin, Jetpack Compose, Material 3 and the MapLibre Android SDK. There's no oth
 | `Routing.kt` | Valhalla routing, route progress for navigation, distance and time formatting |
 | `Transit.kt` | Transitous journey planning, departures and geocoding |
 | `SearchUi.kt`, `DirectionsUi.kt`, `TransitUi.kt` | Compose UI for results, routes, navigation, journeys and departure boards |
+| `Credits.kt` | The credits sheet and open-source licenses screen |
 | `Http.kt` | A small HTTP GET helper |
 
 ## Data and services
@@ -83,3 +84,11 @@ Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright
 ## Privacy
 
 The app has no analytics, accounts or ads. Your location stays on the device, except when it has to be sent to work a feature: the map area or your position goes to the search service for nearby results, and your start point goes to the routing service for directions. Recent places and the last map position are stored only on the phone.
+
+The ⓘ button on the map opens the in-app credits: all of the above, plus every bundled library and its license.
+
+## License
+
+Material Maps is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License v3.0](LICENSE).
+
+The map data, tiles and services listed above have their own licenses and usage policies. In particular, [Transitous](https://transitous.org/api/) may only be used by open-source, non-commercial apps, and the FOSSGIS servers are for light use only. If you fork this app for a large audience, run your own servers or talk to these projects first.

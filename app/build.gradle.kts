@@ -4,6 +4,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // Generates the list of bundled libraries and their licenses for the credits screen.
+    id("com.mikepenz.aboutlibraries.plugin")
 }
 
 android {
@@ -47,7 +49,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 kotlin {
@@ -64,4 +69,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("org.maplibre.gl:android-sdk:11.13.5")
+    implementation("com.mikepenz:aboutlibraries-core:12.2.4")
 }
