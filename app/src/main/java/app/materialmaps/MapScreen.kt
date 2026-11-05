@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Explore
@@ -66,6 +67,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
@@ -1267,6 +1269,9 @@ private fun PlaceCard(
                     Spacer(Modifier.width(8.dp))
                     Text("Share")
                 }
+                OutlinedIconButton(onClick = { context.openPlaceElsewhere(place) }) {
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in another app")
+                }
             }
             departures?.invoke()
         }
@@ -1374,6 +1379,13 @@ private fun Context.openDirections(place: Place) {
     } catch (e: ActivityNotFoundException) {
         Toast.makeText(this, "No navigation app installed", Toast.LENGTH_SHORT).show()
     }
+}
+
+/** Shows the place in another maps app (Google Maps, Organic Maps, OsmAnd, ...), asking which. */
+private fun Context.openPlaceElsewhere(place: Place) {
+    val uri = Uri.parse("geo:${place.lat},${place.lon}?q=${place.lat},${place.lon}(${Uri.encode(place.name)})")
+    // The chooser says so itself when no app can open it.
+    startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "Open in"))
 }
 
 private fun Context.sharePlace(place: Place) {
