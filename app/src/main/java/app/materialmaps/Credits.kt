@@ -28,6 +28,8 @@ import androidx.compose.material.icons.outlined.DirectionsBus
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -113,6 +115,16 @@ private val credits = listOf(
         Icons.Outlined.Search, "Photon by komoot",
         "Search when Transitous can't be reached.",
         "https://photon.komoot.io",
+    ),
+    Credit(
+        Icons.Outlined.Schedule, "Nominatim · Overpass API",
+        "Opening hours, phone numbers and websites from OpenStreetMap, and kinds of places nearby.",
+        "https://nominatim.org",
+    ),
+    Credit(
+        Icons.Outlined.MenuBook, "Wikipedia · Wikimedia Commons",
+        "Descriptions and photos of places. Text under CC BY-SA; photos under their own licenses.",
+        "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use",
     ),
 )
 

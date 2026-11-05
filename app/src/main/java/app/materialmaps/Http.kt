@@ -8,7 +8,9 @@ import java.net.URL
 
 class HttpException(val code: Int, val body: String) : IOException("HTTP $code")
 
-internal suspend fun httpGet(url: String): String = withContext(Dispatchers.IO) {
+internal suspend fun httpGet(url: String): String = String(httpGetBytes(url), Charsets.UTF_8)
+
+internal suspend fun httpGetBytes(url: String): ByteArray = withContext(Dispatchers.IO) {
     val connection = URL(url).openConnection() as HttpURLConnection
     try {
         connection.connectTimeout = 10_000
@@ -19,7 +21,7 @@ internal suspend fun httpGet(url: String): String = withContext(Dispatchers.IO) 
             val body = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
             throw HttpException(code, body)
         }
-        connection.inputStream.bufferedReader().use { it.readText() }
+        connection.inputStream.use { it.readBytes() }
     } finally {
         connection.disconnect()
     }

@@ -29,14 +29,23 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
-fun PlaceRow(place: Place, from: Location?, onClick: () -> Unit, recent: Boolean = false) {
+fun PlaceRow(
+    place: Place,
+    from: Location?,
+    onClick: () -> Unit,
+    recent: Boolean = false,
+    /** Shown after the distance, such as a remove button. */
+    action: (@Composable () -> Unit)? = null,
+) {
     val distance = from?.let {
         val result = FloatArray(1)
         Location.distanceBetween(it.latitude, it.longitude, place.lat, place.lon, result)
@@ -50,13 +59,18 @@ fun PlaceRow(place: Place, from: Location?, onClick: () -> Unit, recent: Boolean
         leadingContent = {
             Icon(if (recent) Icons.Outlined.History else placeIcon(place), contentDescription = null)
         },
-        trailingContent = distance?.let {
+        trailingContent = if (distance == null && action == null) null else {
             {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    distance?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    action?.invoke()
+                }
             }
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),

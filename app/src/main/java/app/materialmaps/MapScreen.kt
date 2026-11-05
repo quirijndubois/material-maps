@@ -3,12 +3,15 @@ package app.materialmaps
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.PointF
 import android.graphics.RectF
 import android.location.Location
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,7 +28,24 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,10 +55,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,7 +68,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Map
@@ -73,6 +98,7 @@ import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -82,6 +108,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -91,6 +118,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -115,6 +143,8 @@ import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.OnCameraTrackingChangedListener
 import org.maplibre.android.location.engine.LocationEngine
+import org.maplibre.android.location.engine.LocationEngineCallback
+import org.maplibre.android.location.engine.LocationEngineResult
 import org.maplibre.android.location.engine.LocationEngineDefault
 import org.maplibre.android.location.engine.LocationEngineRequest
 import org.maplibre.android.location.modes.CameraMode
@@ -124,32 +154,48 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import java.util.Locale
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.format.TextStyle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material3.CircularProgressIndicator
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToLong
 
 // Free OpenStreetMap vector tiles, no API key needed (https://openfreemap.org). Dark mode
 // recolors the detailed light style (see DarkStyle); their own dark style is only a fallback.
-private const val LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty"
 private const val DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 
 private const val PIN_SOURCE = "selected-place"
 private const val PIN_LAYER = "selected-place-pin"
+private const val MEASURE_LINE_SOURCE = "measure-line"
+private const val MEASURE_LINE_LAYER = "measure-line-line"
+private const val MEASURE_POINTS_SOURCE = "measure-points"
+private const val MEASURE_POINTS_LAYER = "measure-points-dot"
 private const val ROUTE_SOURCE = "route"
 private const val ROUTE_CASING_LAYER = "route-casing"
 private const val ROUTE_LAYER = "route-line"
 private const val ALT_ROUTE_SOURCE = "route-alternatives"
 private const val ALT_ROUTE_LAYER = "route-alternatives-line"
+private const val SAVED_SOURCE = "saved-places"
+private const val SAVED_LAYER = "saved-places-dot"
 private const val RESULTS_SOURCE = "search-results"
 private const val RESULTS_LAYER = "search-results-dot"
 private const val TRANSIT_WALK_SOURCE = "transit-walks"
@@ -165,9 +211,20 @@ private const val TRIP_STOPS_LAYER = "trip-stops-dot"
 private const val TRIP_VEHICLE_SOURCE = "trip-vehicle"
 private const val TRIP_VEHICLE_LAYER = "trip-vehicle-dot"
 
-private enum class Follow { Off, Centered, Zoomed, Compass }
+/** How the camera follows the user: not at all, north up (or along the route), or turning with the phone. */
+private enum class Follow { Off, Following, Compass }
 
-private enum class Panel { None, Place, Route, Navigation, Trip }
+/** From this screen width on (landscape phones, tablets), panels go in a column on the left. */
+private const val WIDE_DP = 600
+private val SIDE_PANEL_WIDTH = 400.dp
+
+/** How close the location button zooms in, unless already closer. */
+private const val FOLLOW_ZOOM = 16.0
+
+private enum class Panel { None, Place, List, Route, Navigation, Trip, Measure }
+
+/** What the place picker is choosing a place for. */
+private enum class PickFor { Stop, Home, Work }
 
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -176,16 +233,24 @@ private val LOCATION_PERMISSIONS = arrayOf(
 
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
-fun MapScreen() {
+fun MapScreen(
+    settings: Settings,
+    onSettingsChange: (Settings) -> Unit,
+    darkMap: Boolean,
+    incoming: Uri?,
+    onIncomingHandled: () -> Unit,
+) {
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
-    val dark = isSystemInDarkTheme()
     val colors = MaterialTheme.colorScheme
     val accent = colors.primary.toArgb()
     val bottomInsetPx = WindowInsets.navigationBars.getBottom(density)
+    val topInsetPx = WindowInsets.statusBars.getTop(density)
+    val configuration = LocalConfiguration.current
+    val wide = configuration.screenWidthDp >= WIDE_DP
     fun dp(value: Int) = with(density) { value.dp.roundToPx() }
 
     val mapView = rememberMapViewWithLifecycle()
@@ -200,6 +265,9 @@ fun MapScreen() {
     var selected by remember { mutableStateOf<Place?>(null) }
     var lastShownPlace by remember { mutableStateOf<Place?>(null) }
     var follow by remember { mutableStateOf(Follow.Off) }
+    // Counts camera flights to the user, so one that's been overtaken by another action
+    // (a second tap, picking a place) can't change the follow mode when it ends.
+    val flights = remember { AtomicInteger() }
     var wantsTracking by remember { mutableStateOf(false) }
     var hasLocationPermission by remember { mutableStateOf(context.hasLocationPermission()) }
     var askedForPermission by rememberSaveable { mutableStateOf(false) }
@@ -211,8 +279,52 @@ fun MapScreen() {
     var searching by remember { mutableStateOf(false) }
     var searchFailed by remember { mutableStateOf(false) }
     var recents by remember { mutableStateOf(RecentPlaces.load(context)) }
+    var lists by remember { mutableStateOf(SavedPlaces.load(context)) }
+    var openListId by remember { mutableStateOf<String?>(null) }
+    var lastListId by remember { mutableStateOf<String?>(null) }
+    var savingPlace by remember { mutableStateOf<Place?>(null) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var shortcuts by remember { mutableStateOf(Shortcuts.load(context)) }
+    var picking by remember { mutableStateOf<PickFor?>(null) }
+    var categoryLoading by remember { mutableStateOf<Category?>(null) }
+    var details by remember { mutableStateOf<PlaceDetails?>(null) }
+    // Measuring distance: the points placed so far, or null when not measuring, and the map
+    // point under the crosshair, where the next one would go.
+    var measure by remember { mutableStateOf<List<LatLng>?>(null) }
+    var aim by remember { mutableStateOf<LatLng?>(null) }
+    var lastMeasure by remember { mutableStateOf(emptyList<LatLng>()) }
+    LaunchedEffect(measure) { measure?.let { lastMeasure = it } }
+    var wiki by remember { mutableStateOf<WikiSummary?>(null) }
+    var detailsLoading by remember { mutableStateOf(false) }
+    var savedStopDepartures by remember { mutableStateOf(emptyMap<Place, List<Departure>?>()) }
+    val offline = remember { OfflineMaps(context) }
+    LaunchedEffect(Unit) { offline.refresh() }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val ok = runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(SavedPlaces.export(lists).toByteArray()) }
+        }.isSuccess
+        Toast.makeText(context, if (ok) "Saved places exported" else "Couldn't write that file", Toast.LENGTH_SHORT).show()
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }.orEmpty()
+            SavedPlaces.import(context, text)
+        }.onSuccess { (updated, added) ->
+            lists = updated
+            Toast.makeText(context, if (added == 1) "Added 1 place" else "Added $added places", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "Couldn't read that file", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val savedOnMap by remember {
+        derivedStateOf { if (settings.showSaved) lists.flatMap { it.places }.distinctBy { Triple(it.name, it.lat, it.lon) } else emptyList() }
+    }
 
     var directionsTo by remember { mutableStateOf<Place?>(null) }
+    // Places to pass on the way, in order.
+    var stops by remember { mutableStateOf(emptyList<Place>()) }
     var lastDestination by remember { mutableStateOf<Place?>(null) }
     var travelMode by rememberSaveable { mutableStateOf(TravelMode.Car) }
     var routes by remember { mutableStateOf(emptyList<Route>()) }
@@ -223,6 +335,13 @@ fun MapScreen() {
     var navigating by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<RouteProgress?>(null) }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
+    var speedLimits by remember { mutableStateOf<SpeedLimits?>(null) }
+    // While navigating: the latest fix, kept coming in the background too (see NavigationService).
+    var navLocation by remember { mutableStateOf<Location?>(null) }
+    var passedStops by remember { mutableStateOf(emptySet<Place>()) }
+    val voice = remember { Voice(context) }
+    DisposableEffect(voice) { onDispose { voice.shutdown() } }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var overview by remember { mutableStateOf(false) }
     // Where the route overview button goes back to; null means following the user.
     var beforeOverview by remember { mutableStateOf<CameraPosition?>(null) }
@@ -259,6 +378,7 @@ fun MapScreen() {
     fun myLocation(): Location? = locationComponent()?.lastKnownLocation
 
     fun stopTracking() {
+        flights.incrementAndGet()
         locationComponent()?.cameraMode = CameraMode.NONE
     }
 
@@ -275,11 +395,14 @@ fun MapScreen() {
         tilt: Double? = null,
         bearing: Double? = null,
         topPadding: Double = 0.0,
+        leftPadding: Double = 0.0,
     ) {
         val component = locationComponent() ?: return
         val m = map
         val here = component.lastKnownLocation
+        val flight = flights.incrementAndGet()
         if (m == null || here == null) {
+            // No fix yet: follow right away; the camera moves to the user once there is one.
             component.cameraMode = mode
             follow = followAs
             return
@@ -290,15 +413,16 @@ fun MapScreen() {
             .zoom(zoom ?: current.zoom)
             .tilt(tilt ?: current.tilt)
             .bearing(bearing ?: current.bearing)
-            .padding(0.0, topPadding, 0.0, 0.0)
+            .padding(leftPadding, topPadding, 0.0, 0.0)
             .build()
         follow = followAs
         m.animateCamera(CameraUpdateFactory.newCameraPosition(target), 700, object : MapLibreMap.CancelableCallback {
             override fun onFinish() {
-                if (follow == followAs) component.cameraMode = mode
+                if (flight == flights.get()) component.cameraMode = mode
             }
             override fun onCancel() {
-                follow = Follow.Off
+                // Cut short by the user moving the map, not by a newer flight or mode.
+                if (flight == flights.get()) follow = Follow.Off
             }
         })
     }
@@ -315,34 +439,33 @@ fun MapScreen() {
             // The driving view: heading up, tilted, with the user low on screen to see the road ahead.
             val here = component.lastKnownLocation
             val bearing = here?.takeIf { it.hasBearing() }?.bearing?.toDouble()
-            flyThenTrack(CameraMode.TRACKING_GPS, Follow.Zoomed, zoom = 17.0, tilt = 50.0, bearing = bearing, topPadding = mapView.height * 0.4)
+            flyThenTrack(
+                CameraMode.TRACKING_GPS, Follow.Following, zoom = 17.0, tilt = 50.0, bearing = bearing,
+                topPadding = mapView.height * 0.4,
+                leftPadding = if (wide) with(density) { (SIDE_PANEL_WIDTH + 32.dp).toPx().toDouble() } else 0.0,
+            )
         } else {
-            flyThenTrack(CameraMode.TRACKING, Follow.Zoomed, zoom = 15.0)
+            flyThenTrack(CameraMode.TRACKING, Follow.Following, zoom = maxOf(map?.cameraPosition?.zoom ?: 0.0, FOLLOW_ZOOM))
         }
     }
 
-    /** The location button: center, then zoom in, then turn the map with the phone. */
+    /**
+     * The location button: center on the user at street zoom and follow them; again to turn
+     * the map with the phone; again to go back to north up, still following.
+     */
     fun onLocateClick() {
         val component = locationComponent()
-        if (component == null || navigating) {
+        if (component == null || navigating || follow == Follow.Off) {
             followMe()
             return
         }
-        when (follow) {
-            Follow.Off -> flyThenTrack(CameraMode.TRACKING, Follow.Centered)
-            Follow.Centered -> {
-                component.zoomWhileTracking(16.0)
-                follow = Follow.Zoomed
-            }
-            Follow.Zoomed -> {
-                component.cameraMode = CameraMode.TRACKING_COMPASS
-                follow = Follow.Compass
-            }
-            Follow.Compass -> {
-                // Back to north-up, still following.
-                component.cameraMode = CameraMode.TRACKING_GPS_NORTH
-                follow = Follow.Centered
-            }
+        flights.incrementAndGet()
+        if (follow == Follow.Following) {
+            component.cameraMode = CameraMode.TRACKING_COMPASS
+            follow = Follow.Compass
+        } else {
+            component.cameraMode = CameraMode.TRACKING_GPS_NORTH
+            follow = Follow.Following
         }
     }
 
@@ -363,38 +486,169 @@ fun MapScreen() {
         select(place)
     }
 
+    /**
+     * Room to leave around things fitted on the map, as left, top, right, bottom pixels: for the
+     * panel, which takes [bottomSpace] dp at the bottom, or the side column on wide screens.
+     */
+    fun framePadding(bottomSpace: Int): IntArray = if (wide) {
+        intArrayOf(dp(SIDE_PANEL_WIDTH.value.toInt() + 64), topInsetPx + dp(32), dp(48), bottomInsetPx + dp(48))
+    } else {
+        intArrayOf(dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(bottomSpace))
+    }
+
+    /** Fits [points] on screen beside or above the panel. */
+    fun frame(points: List<LatLng>, bottomSpace: Int) {
+        val (left, top, right, bottom) = framePadding(bottomSpace)
+        runCatching {
+            map?.animateCamera(
+                CameraUpdateFactory.newLatLngBounds(LatLngBounds.Builder().includes(points).build(), left, top, right, bottom),
+                700,
+            )
+        }
+    }
+
+    /** Puts [places] on the map as dots and fits the nearby ones on screen. */
+    fun showOnMap(places: List<Place>, bottomSpace: Int = 120) {
+        mapResults = places
+        resultsOnMap = true
+        selected = null
+        expanded = false
+        keyboard?.hide()
+        stopTracking()
+        if (places.isEmpty()) return
+        // Frame the nearby ones; far-away ones are still in the list.
+        val center = map?.cameraPosition?.target
+        val near = center?.let { c -> places.filter { distanceKm(c.latitude, c.longitude, it.lat, it.lon) < 25 } }
+        val framed = near?.takeIf { it.isNotEmpty() } ?: places
+        if (framed.size == 1) {
+            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(framed[0].lat, framed[0].lon), 15.0), 700)
+        } else {
+            frame(framed.map { LatLng(it.lat, it.lon) }, bottomSpace)
+        }
+    }
+
     fun showResultsOnMap() {
         if (results.size == 1) {
             pickResult(results.first())
             return
         }
         if (results.isEmpty()) return
-        mapResults = results
-        resultsOnMap = true
-        selected = null
-        expanded = false
-        keyboard?.hide()
+        showOnMap(results)
+    }
+
+    fun openList(list: PlaceList) {
+        openListId = list.id
+        lastListId = list.id
+        showOnMap(list.places, bottomSpace = 360)
+    }
+
+    /**
+     * Where the measuring crosshair sits: the middle of the map, or of the part beside the
+     * side panel on wide screens. Read from the view, as it can change size with rotation.
+     */
+    fun crosshair(): PointF {
+        val width = mapView.width.toFloat()
+        val side = if (width / density.density >= WIDE_DP) with(density) { (SIDE_PANEL_WIDTH + 16.dp).toPx() } else 0f
+        return PointF(side + (width - side) / 2, mapView.height / 2f)
+    }
+
+    fun startMeasuring(from: Place) {
         stopTracking()
-        // Frame the nearby matches; far-away ones are still in the list.
-        val center = map?.cameraPosition?.target
-        val near = center?.let { c -> results.filter { distanceKm(c.latitude, c.longitude, it.lat, it.lon) < 25 } }
-        val framed = near?.takeIf { it.isNotEmpty() } ?: results
-        if (framed.size == 1) {
-            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(framed[0].lat, framed[0].lon), 15.0), 700)
-        } else {
-            runCatching {
-                map?.animateCamera(
-                    CameraUpdateFactory.newLatLngBounds(
-                        LatLngBounds.Builder().includes(framed.map { LatLng(it.lat, it.lon) }).build(),
-                        dp(56), topChromePx + dp(40), dp(56), bottomInsetPx + dp(120),
-                    ),
-                    700,
-                )
+        selected = null
+        measure = listOf(LatLng(from.lat, from.lon))
+        aim = map?.projection?.fromScreenLocation(crosshair())
+    }
+
+    fun closeList() {
+        openListId = null
+        resultsOnMap = false
+    }
+
+    /**
+     * Places of [category] in the map data already on the phone, within [bounds]. Instant and
+     * offline, but only as complete as the tiles: zoomed out they leave out smaller places.
+     */
+    fun categoryFromMap(category: Category, bounds: LatLngBounds): List<Place> {
+        val s = style ?: return emptyList()
+        val sourceId = poiLayers.firstNotNullOfOrNull { (s.getLayer(it) as? SymbolLayer)?.sourceId } ?: return emptyList()
+        val source = s.getSourceAs<VectorSource>(sourceId) ?: return emptyList()
+        return source.querySourceFeatures(arrayOf("poi"), null).mapNotNull { feature ->
+            val subclass = feature.getStringProperty("subclass") ?: return@mapNotNull null
+            if (subclass !in category.subclasses) return@mapNotNull null
+            val point = feature.geometry() as? Point ?: return@mapNotNull null
+            if (!bounds.contains(LatLng(point.latitude(), point.longitude()))) return@mapNotNull null
+            val name = feature.getStringProperty("name")?.takeIf { it.isNotBlank() }
+            if (name == null && category.needsName) return@mapNotNull null
+            Place(
+                name = name ?: category.label.removeSuffix("s"),
+                subtitle = "",
+                lat = point.latitude(),
+                lon = point.longitude(),
+                type = subclass,
+                key = category.key,
+            )
+        }
+            // Tiles overlap a little, so the same place can come back more than once.
+            .distinctBy { Triple(it.name, (it.lat * 1e4).roundToLong(), (it.lon * 1e4).roundToLong()) }
+    }
+
+    /** Everything of one kind on screen: from the map itself, or else from OpenStreetMap online. */
+    fun showCategory(category: Category) {
+        val m = map ?: return
+        val bounds = m.projection.visibleRegion.latLngBounds
+        fun show(found: List<Place>) {
+            query = category.label
+            results = found
+            resultsFor = category.label
+            showOnMap(found)
+        }
+        val local = categoryFromMap(category, bounds)
+        if (local.isNotEmpty()) {
+            show(local)
+            return
+        }
+        // Asking Overpass about a whole region is slow and heavy on a shared server.
+        if (m.cameraPosition.zoom < 12) {
+            Toast.makeText(context, "Zoom in to find ${category.label.lowercase()}", Toast.LENGTH_SHORT).show()
+            return
+        }
+        scope.launch {
+            categoryLoading = category
+            try {
+                val found = Overpass.find(category, bounds)
+                if (found.isEmpty()) Toast.makeText(context, "No ${category.label.lowercase()} here", Toast.LENGTH_SHORT).show()
+                else show(found)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, "Couldn't search right now", Toast.LENGTH_SHORT).show()
+            } finally {
+                categoryLoading = null
             }
         }
     }
 
+    fun downloadVisibleArea() {
+        val m = map ?: return
+        val bounds = m.projection.visibleRegion.latLngBounds
+        val zoom = m.cameraPosition.zoom
+        val center = bounds.center
+        scope.launch {
+            val near = runCatching { Geocoder.reverse(center.latitude, center.longitude) }.getOrNull()
+            val town = near?.subtitle?.split(", ")?.lastOrNull { it.isNotBlank() && it.none(Char::isDigit) }
+            offline.download(
+                name = town ?: near?.name ?: "Map area",
+                styleUrl = settings.mapStyle.url,
+                bounds = bounds,
+                minZoom = (zoom - 3).coerceIn(0.0, 12.0),
+                pixelRatio = context.resources.displayMetrics.density,
+            )
+        }
+    }
+
     fun startDirections(place: Place) {
+        stops = emptyList()
+        passedStops = emptySet()
         directionsTo = place
         lastDestination = place
         routes = emptyList()
@@ -404,10 +658,17 @@ fun MapScreen() {
         if (!hasLocationPermission) permissionLauncher.launch(LOCATION_PERMISSIONS)
     }
 
+    fun onShortcut(shortcut: Shortcut) {
+        val place = shortcuts[shortcut]
+        if (place == null) picking = if (shortcut == Shortcut.Home) PickFor.Home else PickFor.Work
+        else startDirections(place)
+    }
+
     fun stopNavigation() {
         navigating = false
         overview = false
         progress = null
+        voice.stop()
         locationComponent()?.apply {
             cameraMode = CameraMode.NONE
             setNavigationPuck(context, accent, navigating = false)
@@ -440,7 +701,7 @@ fun MapScreen() {
         overview = true
         val here = myLocation()?.let { LatLng(it.latitude, it.longitude) }
         val bounds = LatLngBounds.Builder().includes(route.points + listOfNotNull(here)).build()
-        val padding = intArrayOf(dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(200))
+        val padding = framePadding(200)
         runCatching { m.getCameraForLatLngBounds(bounds, padding, 0.0, 0.0) }.getOrNull()?.let {
             m.animateCamera(CameraUpdateFactory.newCameraPosition(it), 700)
         }
@@ -485,6 +746,12 @@ fun MapScreen() {
     }
 
     fun startNavigation() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            // Without it the navigation notification is hidden; navigation itself works either way.
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         navigating = true
         progress = null
         locationComponent()?.setNavigationPuck(context, accent, navigating = true)
@@ -494,9 +761,11 @@ fun MapScreen() {
     fun pointNorth() {
         val m = map ?: return
         val component = locationComponent()
-        if (component != null && component.cameraMode in setOf(CameraMode.TRACKING_GPS, CameraMode.TRACKING_COMPASS)) {
+        // While following, an animation of our own would fight the tracking; let it turn north instead.
+        if (component != null && component.cameraMode != CameraMode.NONE) {
+            flights.incrementAndGet()
             component.cameraMode = CameraMode.TRACKING_GPS_NORTH
-            if (follow == Follow.Compass) follow = Follow.Centered
+            if (follow == Follow.Compass) follow = Follow.Following
             return
         }
         m.animateCamera(
@@ -517,10 +786,7 @@ fun MapScreen() {
         }
     }
 
-    // Load the map style once; fall back to the light style if the dark one fails.
-    DisposableEffect(mapView) {
-        var fellBack = false
-        fun load(m: MapLibreMap, builder: Style.Builder) {
+    fun loadStyle(m: MapLibreMap, builder: Style.Builder) {
             m.setStyle(builder) { loaded ->
                 // Routes go above roads and buildings but below the labels, which these styles
                 // keep at the end (some symbol layers, like one-way arrows, come much earlier).
@@ -545,6 +811,9 @@ fun MapScreen() {
                 loaded.addSource(GeoJsonSource(TRIP_STOPS_SOURCE))
                 loaded.addSource(GeoJsonSource(TRIP_VEHICLE_SOURCE))
                 loaded.addSource(GeoJsonSource(PIN_SOURCE))
+                loaded.addSource(GeoJsonSource(MEASURE_LINE_SOURCE))
+                loaded.addSource(GeoJsonSource(MEASURE_POINTS_SOURCE))
+                loaded.addSource(GeoJsonSource(SAVED_SOURCE))
                 loaded.addSource(GeoJsonSource(RESULTS_SOURCE))
                 poiLayers = loaded.layers
                     .filter { it is SymbolLayer && it.sourceLayer == "poi" }
@@ -586,6 +855,14 @@ fun MapScreen() {
                     )
                 )
                 loaded.addLayer(
+                    CircleLayer(SAVED_LAYER, SAVED_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(6f),
+                        PropertyFactory.circleColor(colors.tertiary.toArgb()),
+                        PropertyFactory.circleStrokeWidth(2f),
+                        PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    )
+                )
+                loaded.addLayer(
                     CircleLayer(RESULTS_LAYER, RESULTS_SOURCE).withProperties(
                         PropertyFactory.circleRadius(7f),
                         PropertyFactory.circleColor(colors.secondary.toArgb()),
@@ -601,14 +878,32 @@ fun MapScreen() {
                         PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
                     )
                 )
+                loaded.addLayer(
+                    line(MEASURE_LINE_LAYER, MEASURE_LINE_SOURCE, colors.tertiary.toArgb(), 4f)
+                        .withProperties(PropertyFactory.lineDasharray(arrayOf(2f, 1.5f)))
+                )
+                loaded.addLayer(
+                    CircleLayer(MEASURE_POINTS_LAYER, MEASURE_POINTS_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(6f),
+                        PropertyFactory.circleColor(android.graphics.Color.WHITE),
+                        PropertyFactory.circleStrokeWidth(3f),
+                        PropertyFactory.circleStrokeColor(colors.tertiary.toArgb()),
+                    )
+                )
                 style = loaded
             }
-        }
+    }
+
+    // Set up the map once. Styles are loaded below, as the settings ask.
+    var styleFellBack by remember { mutableStateOf(false) }
+    val currentLoadStyle by rememberUpdatedState(::loadStyle)
+    DisposableEffect(mapView) {
+        // Fall back to the standard light style if the chosen one can't be loaded.
         val failListener = MapView.OnDidFailLoadingMapListener {
             val m = map
-            if (m != null && style == null && !fellBack) {
-                fellBack = true
-                load(m, Style.Builder().fromUri(LIGHT_STYLE))
+            if (m != null && style == null && !styleFellBack) {
+                styleFellBack = true
+                currentLoadStyle(m, Style.Builder().fromUri(MapStyle.Standard.url))
             }
         }
         mapView.addOnDidFailLoadingMapListener(failListener)
@@ -631,16 +926,27 @@ fun MapScreen() {
             m.addOnCameraMoveListener {
                 bearing = m.cameraPosition.bearing.toFloat()
                 tilt = m.cameraPosition.tilt.toFloat()
+                if (measure != null) aim = m.projection.fromScreenLocation(crosshair())
             }
             m.addOnMapClickListener { point ->
+                // While measuring, a tap adds a point there.
+                measure?.let {
+                    measure = it + point
+                    return@addOnMapClickListener true
+                }
                 val p = m.projection.toScreenLocation(point)
                 val slop = dp(16)
                 val area = RectF(p.x - slop, p.y - slop, p.x + slop, p.y + slop)
                 fun hit(vararg layers: String) =
                     if (layers.isEmpty()) null else m.queryRenderedFeatures(area, *layers).firstOrNull()
                 if (directionsTo == null) {
-                    // Search results first, then the map's own POIs (shops, sights, stations, stops).
+                    // Search results first, then saved places, then the map's own POIs (shops,
+                    // sights, stations, stops).
                     hit(RESULTS_LAYER)?.getNumberProperty("index")?.toInt()?.let { mapResults.getOrNull(it) }?.let {
+                        select(it, zoom = null)
+                        return@addOnMapClickListener true
+                    }
+                    hit(SAVED_LAYER)?.getNumberProperty("index")?.toInt()?.let { savedOnMap.getOrNull(it) }?.let {
                         select(it, zoom = null)
                         return@addOnMapClickListener true
                     }
@@ -670,7 +976,7 @@ fun MapScreen() {
                 }
             }
             m.addOnMapLongClickListener { point ->
-                if (directionsTo != null) return@addOnMapLongClickListener false
+                if (directionsTo != null || measure != null) return@addOnMapLongClickListener false
                 val dropped = Place(
                     name = "Dropped pin",
                     subtitle = Photon.formatCoordinates(point.latitude, point.longitude),
@@ -686,21 +992,59 @@ fun MapScreen() {
                 }
                 true
             }
-            if (dark) {
-                scope.launch {
-                    val palette = DarkStyle.Palette(colors.surface.toArgb(), colors.tertiary.toArgb())
-                    val cached = DarkStyle.cached(context, palette)
-                    if (cached != null) load(m, Style.Builder().fromJson(cached))
-                    val fresh = DarkStyle.load(context, LIGHT_STYLE, palette)
-                    if (cached == null) {
-                        load(m, if (fresh != null) Style.Builder().fromJson(fresh) else Style.Builder().fromUri(DARK_STYLE))
-                    }
-                }
-            } else {
-                load(m, Style.Builder().fromUri(LIGHT_STYLE))
-            }
         }
         onDispose { mapView.removeOnDidFailLoadingMapListener(failListener) }
+    }
+
+    // Load the chosen map style, recolored when dark, and again whenever that changes.
+    LaunchedEffect(map, settings.mapStyle, darkMap) {
+        val m = map ?: return@LaunchedEffect
+        style = null
+        styleFellBack = false
+        val url = settings.mapStyle.url
+        if (darkMap) {
+            val palette = DarkStyle.Palette(colors.surface.toArgb(), colors.tertiary.toArgb())
+            val cached = DarkStyle.cached(context, url, palette)
+            if (cached != null) loadStyle(m, Style.Builder().fromJson(cached))
+            val fresh = DarkStyle.load(context, url, palette)
+            if (cached == null) {
+                loadStyle(m, if (fresh != null) Style.Builder().fromJson(fresh) else Style.Builder().fromUri(DARK_STYLE))
+            }
+        } else {
+            loadStyle(m, Style.Builder().fromUri(url))
+        }
+    }
+
+    // 3D buildings, where the style has them.
+    LaunchedEffect(style, settings.buildings3d) {
+        val s = style ?: return@LaunchedEffect
+        val visibility = if (settings.buildings3d) Property.VISIBLE else Property.NONE
+        s.layers.filterIsInstance<FillExtrusionLayer>().forEach { it.setProperties(PropertyFactory.visibility(visibility)) }
+    }
+
+    // The measured path: placed points, plus a last stretch to the crosshair.
+    LaunchedEffect(measure, aim, style) {
+        val s = style ?: return@LaunchedEffect
+        val line = s.getSourceAs<GeoJsonSource>(MEASURE_LINE_SOURCE) ?: return@LaunchedEffect
+        val dots = s.getSourceAs<GeoJsonSource>(MEASURE_POINTS_SOURCE) ?: return@LaunchedEffect
+        val points = measure.orEmpty()
+        val path = (points + listOfNotNull(aim.takeIf { measure != null })).map { Point.fromLngLat(it.longitude, it.latitude) }
+        line.setGeoJson(
+            FeatureCollection.fromFeatures(listOfNotNull(path.takeIf { it.size >= 2 }?.let { Feature.fromGeometry(LineString.fromLngLats(it)) }))
+        )
+        dots.setGeoJson(FeatureCollection.fromFeatures(points.map { Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)) }))
+    }
+
+    // Saved places as dots, unless turned off in the settings.
+    LaunchedEffect(style, savedOnMap) {
+        val source = style?.getSourceAs<GeoJsonSource>(SAVED_SOURCE) ?: return@LaunchedEffect
+        source.setGeoJson(
+            FeatureCollection.fromFeatures(
+                savedOnMap.mapIndexed { i, place ->
+                    Feature.fromGeometry(Point.fromLngLat(place.lon, place.lat)).apply { addNumberProperty("index", i) }
+                }
+            )
+        )
     }
 
     // Show the blue dot and follow the user when asked.
@@ -726,7 +1070,7 @@ fun MapScreen() {
                     m.moveCamera(
                         CameraUpdateFactory.newLatLngZoom(
                             LatLng(here.latitude, here.longitude),
-                            maxOf(m.cameraPosition.zoom, 15.0),
+                            maxOf(m.cameraPosition.zoom, FOLLOW_ZOOM),
                         )
                     )
                 }
@@ -793,7 +1137,9 @@ fun MapScreen() {
     }
 
     // Fetch routes from the user's location to the destination.
-    LaunchedEffect(directionsTo, travelMode, routeRequest, hasLocationPermission, tripTime) {
+    // Only the settings that change the route itself fetch it again.
+    val routeOptions = listOf(settings.avoidHighways, settings.avoidTolls, settings.avoidFerries, settings.units)
+    LaunchedEffect(directionsTo, travelMode, routeRequest, hasLocationPermission, tripTime, routeOptions, stops) {
         val target = directionsTo ?: return@LaunchedEffect
         if (!hasLocationPermission) {
             routeError = "Allow location access to get directions from where you are."
@@ -825,7 +1171,15 @@ fun MapScreen() {
                 itineraries = plan.itineraries
                 transitNextPage = plan.nextPage
             } else {
-                val found = Valhalla.route(from.latitude, from.longitude, target.lat, target.lon, travelMode)
+                // Stops that are already behind (reached while navigating) aren't routed to again.
+                val ahead = stops.filterNot { it in passedStops }
+                val found = Valhalla.route(
+                    LatLng(from.latitude, from.longitude),
+                    ahead.map { LatLng(it.lat, it.lon) },
+                    LatLng(target.lat, target.lon),
+                    travelMode,
+                    settings,
+                )
                 routeIndex = 0
                 routes = found
             }
@@ -858,15 +1212,7 @@ fun MapScreen() {
         )
         if (route != null && route.points.size >= 2 && !navigating) {
             stopTracking()
-            val bounds = LatLngBounds.Builder().includes(route.points).build()
-            runCatching {
-                map?.animateCamera(
-                    CameraUpdateFactory.newLatLngBounds(
-                        bounds, dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(300),
-                    ),
-                    700,
-                )
-            }
+            frame(route.points, 300)
         }
     }
 
@@ -885,15 +1231,7 @@ fun MapScreen() {
         val points = legs.flatMap { it.points }
         if (points.size >= 2) {
             stopTracking()
-            runCatching {
-                map?.animateCamera(
-                    CameraUpdateFactory.newLatLngBounds(
-                        LatLngBounds.Builder().includes(points).build(),
-                        dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(360),
-                    ),
-                    700,
-                )
-            }
+            frame(points, 360)
         }
     }
 
@@ -926,15 +1264,7 @@ fun MapScreen() {
                     val points = loaded.points.ifEmpty { loaded.stops.map { LatLng(it.lat, it.lon) } }
                     if (points.size >= 2) {
                         stopTracking()
-                        runCatching {
-                            map?.animateCamera(
-                                CameraUpdateFactory.newLatLngBounds(
-                                    LatLngBounds.Builder().includes(points).build(),
-                                    dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(440),
-                                ),
-                                700,
-                            )
-                        }
+                        frame(points, 440)
                     }
                 }
             } catch (e: CancellationException) {
@@ -985,6 +1315,69 @@ fun MapScreen() {
         )
     }
 
+    // Opening hours, phone and website for the selected place.
+    // Opening hours, phone and website, plus a Wikipedia summary for sights and landmarks.
+    LaunchedEffect(selected?.name, selected?.lat, selected?.lon) {
+        details = null
+        wiki = null
+        detailsLoading = false
+        val place = selected ?: return@LaunchedEffect
+        if (place.key == "building" || place.name == "Dropped pin") return@LaunchedEffect
+        detailsLoading = true
+        // Nominatim is quick; Overpass has the same data but is often too busy to answer in time.
+        val found = runCatching { Nominatim.details(place) }
+            .recoverCatching { Overpass.details(place) }
+            .getOrNull()
+        details = found?.takeIf { it.openingHours != null || it.phone != null || it.website != null }
+        // OpenStreetMap's link to the article finds it in any language; without one, look for
+        // an article nearby with the place's name.
+        wiki = found?.takeIf { it.wikipedia != null || it.wikidata != null }
+            ?.let { runCatching { Wikipedia.forTags(it.wikipedia, it.wikidata) }.getOrNull() }
+            ?: runCatching { Wikipedia.nearby(place) }.getOrNull()
+        detailsLoading = false
+    }
+
+    // Next departures from saved stops, while the search panel shows them.
+    val savedStops by remember { derivedStateOf { lists.flatMap { it.places }.filter { it.departureRadius() != null }.distinctBy { it.name } } }
+    LaunchedEffect(expanded, savedStops) {
+        if (!expanded || savedStops.isEmpty()) return@LaunchedEffect
+        while (true) {
+            savedStops.take(4).forEach { stop ->
+                val radius = stop.departureRadius() ?: return@forEach
+                val found = runCatching { Transitous.departures(stop.lat, stop.lon, radius, count = 6) }.getOrNull()
+                savedStopDepartures = savedStopDepartures + (stop to (found ?: savedStopDepartures[stop] ?: emptyList()))
+            }
+            delay(30_000)
+        }
+    }
+
+    // Locations other apps send us: geo: links and shared map links.
+    LaunchedEffect(incoming, map) {
+        val uri = incoming ?: return@LaunchedEffect
+        if (map == null) return@LaunchedEffect
+        onIncomingHandled()
+        when (val link = MapLink.parse(uri)) {
+            is MapLink.At -> {
+                val place = Place(
+                    name = link.label ?: "Dropped pin",
+                    subtitle = Photon.formatCoordinates(link.lat, link.lon),
+                    lat = link.lat,
+                    lon = link.lon,
+                )
+                select(place, zoom = link.zoom ?: 16.0)
+                if (link.label == null) {
+                    val address = runCatching { Geocoder.reverse(place.lat, place.lon) }.getOrNull()
+                    if (address != null && selected === place) selected = address.copy(lat = place.lat, lon = place.lon)
+                }
+            }
+            is MapLink.Search -> {
+                query = link.query
+                expanded = true
+            }
+            null -> Toast.makeText(context, "Couldn't find a location in that link", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // Live departures for stops and stations, refreshed while the card is open.
     LaunchedEffect(selected) {
         departures = null
@@ -1011,11 +1404,31 @@ fun MapScreen() {
         val route = routes.getOrNull(routeIndex) ?: return@LaunchedEffect
         var offRouteTicks = 0
         var speed = 0f
+        var nextAnnouncement = 0
+        var shownTurn: String? = null
         while (true) {
-            val here = myLocation()
+            val here = navLocation ?: myLocation()
             if (here != null) {
                 val p = route.progress(here.latitude, here.longitude)
                 progress = p
+                // Say what's due by now. Several can fall due at once (after a GPS gap, or a
+                // reroute that starts mid-instruction); only the latest still makes sense then.
+                var due: Announcement? = null
+                while (nextAnnouncement < route.announcements.size && route.announcements[nextAnnouncement].at <= p.traveled) {
+                    val a = route.announcements[nextAnnouncement++]
+                    if (p.traveled - a.at < 150) due = a
+                }
+                if (due != null && settings.voiceGuidance) voice.say(due.text)
+                stops.firstOrNull { stop ->
+                    stop !in passedStops && distanceKm(here.latitude, here.longitude, stop.lat, stop.lon) < 0.05
+                }?.let { passedStops = passedStops + it }
+                // The next turn in the notification, for when the app isn't in front.
+                val turn = if (p.arrived) "You've arrived" else p.next?.instruction ?: "Head to ${directionsTo?.name}"
+                val turnTitle = if (p.arrived) directionsTo?.name.orEmpty() else formatDistance(p.distanceToNext)
+                if (turn + turnTitle != shownTurn) {
+                    shownTurn = turn + turnTitle
+                    NavigationService.update(context, turnTitle, turn)
+                }
                 // Smoothed, so one odd GPS reading doesn't make the map jump.
                 if (here.hasSpeed()) speed += (here.speed - speed) * 0.3f
                 val component = locationComponent()
@@ -1037,6 +1450,69 @@ fun MapScreen() {
         }
     }
 
+    // Run the foreground service while navigating, and take location updates of our own: the
+    // map's location component stops listening when the app goes to the background.
+    DisposableEffect(navigating) {
+        if (!navigating) return@DisposableEffect onDispose {}
+        NavigationService.start(context, "Navigating", directionsTo?.name)
+        val callback = object : LocationEngineCallback<LocationEngineResult> {
+            override fun onSuccess(result: LocationEngineResult) {
+                result.lastLocation?.let { navLocation = it }
+            }
+            override fun onFailure(exception: Exception) {}
+        }
+        val request = LocationEngineRequest.Builder(1000)
+            .setFastestInterval(500)
+            .setPriority(LocationEngineRequest.PRIORITY_HIGH_ACCURACY)
+            .build()
+        @SuppressLint("MissingPermission")
+        fun listen() = runCatching { headingEngine.requestLocationUpdates(request, callback, android.os.Looper.getMainLooper()) }
+        listen()
+        onDispose {
+            headingEngine.removeLocationUpdates(callback)
+            navLocation = null
+            NavigationService.stop(context)
+        }
+    }
+
+    // Ending navigation from the notification.
+    LaunchedEffect(Unit) {
+        var seen = NavigationService.endRequests.value
+        NavigationService.endRequests.collect {
+            if (it != seen) {
+                seen = it
+                if (navigating) stopNavigation()
+            }
+        }
+    }
+
+    // Speed limits for the route being driven, looked up once it's chosen.
+    LaunchedEffect(navigating, routes, routeIndex) {
+        speedLimits = null
+        val route = routes.getOrNull(routeIndex)
+        if (!navigating || travelMode != TravelMode.Car || route == null) return@LaunchedEffect
+        speedLimits = runCatching { Valhalla.speedLimits(route) }.getOrNull()
+    }
+
+    // GPS once a second while navigating; outside of that, every few seconds at most and
+    // without insisting on satellites, which saves battery while just looking at the map.
+    LaunchedEffect(style, navigating) {
+        val component = locationComponent() ?: return@LaunchedEffect
+        component.locationEngineRequest = if (navigating) {
+            LocationEngineRequest.Builder(1000)
+                .setFastestInterval(500)
+                .setDisplacement(3f)
+                .setPriority(LocationEngineRequest.PRIORITY_HIGH_ACCURACY)
+                .build()
+        } else {
+            LocationEngineRequest.Builder(3000)
+                .setFastestInterval(1000)
+                .setDisplacement(5f)
+                .setPriority(LocationEngineRequest.PRIORITY_BALANCED_POWER_ACCURACY)
+                .build()
+        }
+    }
+
     // While navigating, the arrow and the map point along the route rather than where the phone points.
     LaunchedEffect(navigating, routes, routeIndex) {
         headingEngine.route = if (navigating) routes.getOrNull(routeIndex) else null
@@ -1048,12 +1524,14 @@ fun MapScreen() {
         onDispose { view.keepScreenOn = false }
     }
 
-    BackHandler(enabled = !expanded && (openTrip != null || navigating || directionsTo != null || selected != null || resultsOnMap)) {
+    BackHandler(enabled = !expanded && (measure != null || openTrip != null || navigating || directionsTo != null || selected != null || openListId != null || resultsOnMap)) {
         when {
+            measure != null -> measure = null
             openTrip != null -> openTrip = null
             navigating -> stopNavigation()
             directionsTo != null -> exitDirections()
             selected != null -> selected = null
+            openListId != null -> closeList()
             else -> resultsOnMap = false
         }
     }
@@ -1066,293 +1544,481 @@ fun MapScreen() {
     }
     val trackTop = Modifier.onGloballyPositioned { if (!expanded) topChromePx = it.boundsInRoot().bottom.toInt() }
 
-    Box(Modifier.fillMaxSize()) {
-        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+    // What's left for lists in panels once the top bar and the panel's own header and buttons
+    // are taken off; in the side column the panel only shares the height with the top bar.
+    val listMax = (configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - if (wide) 220.dp else 330.dp)
+        .coerceIn(120.dp, 380.dp)
+    CompositionLocalProvider(LocalListMaxHeight provides listMax) {
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
 
-        var showCredits by rememberSaveable { mutableStateOf(false) }
-        CreditsButton(
-            onClick = { showCredits = true },
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(start = 4.dp, bottom = 4.dp),
-        )
-        if (showCredits) CreditsSheet(onDismiss = { showCredits = false })
-
-        AnimatedVisibility(
-            visible = compassVisible,
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut(),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = with(density) { topChromePx.toDp() } + 12.dp, end = 16.dp),
-        ) {
-            Compass(bearing = { bearing }, onClick = ::pointNorth)
-        }
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.End,
-        ) {
-            val following = follow != Follow.Off
-            if (navigating && directionsTo != null) {
-                // Like a car navigation app: see the whole route, then jump back to the driving view.
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                    AnimatedVisibility(
-                        visible = !following,
-                        enter = fadeIn() + scaleIn(),
-                        exit = fadeOut() + scaleOut(),
-                    ) {
-                        ExtendedFloatingActionButton(
-                            onClick = ::followMe,
-                            icon = { Icon(Icons.Filled.Navigation, contentDescription = null) },
-                            text = { Text("Re-center") },
-                            containerColor = colors.surfaceContainerHigh,
-                            contentColor = colors.primary,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    FloatingActionButton(
-                        onClick = ::toggleRouteOverview,
-                        containerColor = if (overview) colors.primaryContainer else colors.surfaceContainerHigh,
-                    ) {
-                        Icon(
-                            Icons.Filled.Route,
-                            contentDescription = "Route overview",
-                            tint = if (overview) colors.onPrimaryContainer else colors.primary,
-                        )
-                    }
+            if (measure != null) {
+                // Aim with the map; the crosshair stays put. Same spot as crosshair() works out.
+                Box(Modifier.fillMaxSize().padding(start = if (wide) SIDE_PANEL_WIDTH + 16.dp else 0.dp)) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = colors.onSurface,
+                        modifier = Modifier.align(Alignment.Center).size(36.dp),
+                    )
                 }
-            } else FloatingActionButton(
-                onClick = {
-                    if (hasLocationPermission) onLocateClick()
-                    else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                },
-                containerColor = if (following) colors.primaryContainer else colors.surfaceContainerHigh,
-            ) {
-                Icon(
-                    when (follow) {
-                        Follow.Off -> Icons.Filled.LocationSearching
-                        Follow.Compass -> Icons.Filled.Explore
-                        else -> Icons.Filled.MyLocation
+            }
+
+            var showCredits by rememberSaveable { mutableStateOf(false) }
+            CreditsButton(
+                onClick = { showCredits = true },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .navigationBarsPadding()
+                    .padding(start = 4.dp, bottom = 4.dp),
+            )
+            if (showCredits) CreditsSheet(onDismiss = { showCredits = false })
+            if (showSettings) {
+                SettingsSheet(
+                    settings = settings,
+                    onChange = onSettingsChange,
+                    onClearHistory = if (recents.isNotEmpty()) ({
+                        RecentPlaces.clear(context)
+                        recents = emptyList()
+                    }) else null,
+                    shortcuts = shortcuts,
+                    onSetShortcut = { picking = if (it == Shortcut.Home) PickFor.Home else PickFor.Work },
+                    onClearShortcut = { shortcuts = Shortcuts.set(context, it, null) },
+                    offlineAreas = offline.areas,
+                    onDownloadArea = {
+                        showSettings = false
+                        downloadVisibleArea()
+                        Toast.makeText(context, "Downloading the map of this area", Toast.LENGTH_SHORT).show()
                     },
-                    contentDescription = "My location",
-                    tint = if (following) colors.onPrimaryContainer else colors.primary,
+                    onDeleteArea = { offline.delete(it.id) },
+                    onExport = { exportLauncher.launch("saved-places.geojson") },
+                    onImport = { importLauncher.launch(arrayOf("application/geo+json", "application/json", "*/*")) },
+                    onDismiss = { showSettings = false },
                 )
             }
-            val panel = when {
-                directionsTo != null && navigating -> Panel.Navigation
-                openTrip != null -> Panel.Trip
-                directionsTo != null -> Panel.Route
-                selected != null -> Panel.Place
-                else -> Panel.None
+            picking?.let { purpose ->
+                PlacePicker(
+                    title = when (purpose) {
+                        PickFor.Stop -> "Add a stop"
+                        PickFor.Home -> "Set home"
+                        PickFor.Work -> "Set work"
+                    },
+                    near = myLocation(),
+                    suggestions = (shortcuts.values + lists.flatMap { it.places } + recents).distinctBy { it.name to it.lat },
+                    onPick = { place ->
+                        picking = null
+                        when (purpose) {
+                            PickFor.Stop -> stops = stops + place
+                            PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
+                            PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
+                        }
+                    },
+                    onDismiss = { picking = null },
+                )
             }
-            // Animating the panel's size makes the location button glide up and down with it.
-            AnimatedContent(
-                targetState = panel,
-                transitionSpec = {
-                    (slideInVertically { it / 2 } + fadeIn()) togetherWith (slideOutVertically { it / 2 } + fadeOut()) using
-                        SizeTransform(clip = false)
-                },
-                contentAlignment = Alignment.BottomCenter,
-                label = "bottomPanel",
-            ) { target ->
-                // Fall back to the last values so panels keep their content while animating out.
-                val destination = directionsTo ?: lastDestination
-                val place = selected ?: lastShownPlace
-                val panelModifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 16.dp)
-                    .animateContentSize()
-                when {
-                    target == Panel.Trip && (openTrip ?: lastTrip) != null -> TripPanel(
-                        ref = openTrip ?: lastTrip!!,
-                        trip = trip,
-                        now = tripNow,
-                        error = tripError,
-                        onBack = { openTrip = null },
-                        onRetry = { tripRequest++ },
-                        modifier = panelModifier,
-                    )
-                    target == Panel.Navigation && destination != null -> NavigationPanel(
-                        route = routes.getOrNull(routeIndex),
-                        progress = progress,
-                        onEnd = ::stopNavigation,
-                        modifier = panelModifier,
-                    )
-                    target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
-                        itineraries = itineraries,
-                        selected = itineraryIndex,
-                        onSelect = { itineraryIndex = it },
-                        tripTime = tripTime,
-                        onTripTimeChange = { tripTime = it },
-                        loading = routing,
-                        error = routeError,
-                        onRetry = {
-                            if (hasLocationPermission) routeRequest++
-                            else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                        },
-                        onLater = if (transitNextPage != null) ::loadLaterConnections else null,
-                        onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
-                        modifier = panelModifier,
-                    )
-                    target == Panel.Route && destination != null -> RoutePanel(
-                        routes = routes,
-                        selectedIndex = routeIndex,
-                        onSelect = { routeIndex = it },
-                        loading = routing,
-                        error = routeError,
-                        onRetry = {
-                            if (hasLocationPermission) routeRequest++
-                            else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                        },
-                        onStart = ::startNavigation,
-                        onOpenElsewhere = { context.openDirections(destination) },
-                        modifier = panelModifier,
-                    )
-                    target == Panel.Place && place != null -> PlaceCard(
-                        place,
-                        onDirections = { startDirections(place) },
-                        onClose = { selected = null },
-                        modifier = panelModifier,
-                        departures = if (place.departureRadius() != null) {
-                            {
-                            DepartureBoard(
-                                departures, departuresLoading,
-                                onOpenTrip = { d -> d.tripRef()?.let(::showTrip) },
-                                modifier = Modifier.padding(top = 16.dp, end = 12.dp),
+            savingPlace?.let { place ->
+                SaveToListSheet(
+                    place = place,
+                    lists = lists,
+                    onToggle = { lists = SavedPlaces.toggle(context, it.id, place) },
+                    onCreate = { lists = SavedPlaces.create(context, it, place) },
+                    onDismiss = { savingPlace = null },
+                )
+            }
+
+            AnimatedVisibility(
+                visible = compassVisible,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = with(density) { topChromePx.toDp() } + 12.dp, end = 16.dp),
+            ) {
+                Compass(bearing = { bearing }, onClick = ::pointNorth)
+            }
+
+            val following = follow != Follow.Off
+            // The location and navigation buttons, over the map.
+            val mapButtons: @Composable () -> Unit = {
+                if (navigating && directionsTo != null) {
+                    // Like a car navigation app: see the whole route, then jump back to the driving view.
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            progress?.let { p -> speedLimits?.at(p.segment) }?.let { SpeedLimitSign(it) }
+                            AnimatedVisibility(
+                                visible = !following,
+                                enter = fadeIn() + scaleIn(),
+                                exit = fadeOut() + scaleOut(),
+                            ) {
+                                ExtendedFloatingActionButton(
+                                    onClick = ::followMe,
+                                    icon = { Icon(Icons.Filled.Navigation, contentDescription = null) },
+                                    text = { Text("Re-center") },
+                                    containerColor = colors.surfaceContainerHigh,
+                                    contentColor = colors.primary,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        FloatingActionButton(
+                            onClick = ::toggleRouteOverview,
+                            containerColor = if (overview) colors.primaryContainer else colors.surfaceContainerHigh,
+                        ) {
+                            Icon(
+                                Icons.Filled.Route,
+                                contentDescription = "Route overview",
+                                tint = if (overview) colors.onPrimaryContainer else colors.primary,
                             )
                         }
-                        } else null,
+                    }
+                } else FloatingActionButton(
+                    onClick = {
+                        if (hasLocationPermission) onLocateClick()
+                        else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                    },
+                    containerColor = if (following) colors.primaryContainer else colors.surfaceContainerHigh,
+                ) {
+                    Icon(
+                        when (follow) {
+                            Follow.Off -> Icons.Filled.LocationSearching
+                            Follow.Compass -> Icons.Filled.Explore
+                            else -> Icons.Filled.MyLocation
+                        },
+                        contentDescription = "My location",
+                        tint = if (following) colors.onPrimaryContainer else colors.primary,
                     )
-                    else -> Spacer(Modifier.fillMaxWidth())
                 }
             }
-        }
-
-        val destination = directionsTo
-        when {
-            destination != null && navigating -> NavigationBanner(
-                route = routes.getOrNull(routeIndex),
-                progress = progress,
-                destination = destination,
-                rerouting = routing,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .fillMaxWidth()
-                    .then(trackTop),
-            )
-            destination != null -> DirectionsHeader(
-                destination = destination,
-                mode = travelMode,
-                onModeChange = { travelMode = it },
-                onBack = ::exitDirections,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .fillMaxWidth()
-                    .then(trackTop),
-            )
-            else -> {
-                val sidePadding by animateDpAsState(if (expanded) 0.dp else 16.dp, label = "searchPadding")
-                SearchBar(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(horizontal = sidePadding)
-                        .then(trackTop),
-                    inputField = {
-                        SearchBarDefaults.InputField(
-                            query = query,
-                            onQueryChange = {
-                                query = it
-                                resultsOnMap = false
-                            },
-                            onSearch = { showResultsOnMap() },
-                            expanded = expanded,
-                            onExpandedChange = { expanded = it },
-                            placeholder = { Text("Search here") },
-                            leadingIcon = {
-                                if (expanded) {
-                                    IconButton(onClick = { expanded = false }) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                                    }
-                                } else {
-                                    Icon(Icons.Filled.Search, contentDescription = null)
-                                }
-                            },
-                            trailingIcon = {
-                                if (query.isNotEmpty()) {
-                                    IconButton(onClick = {
-                                        query = ""
-                                        resultsOnMap = false
-                                        selected = null
-                                    }) {
-                                        Icon(Icons.Filled.Close, contentDescription = "Clear")
-                                    }
-                                }
-                            },
-                        )
+            // Place cards, routes, trips and the like.
+            val panelContent: @Composable () -> Unit = {
+                val panel = when {
+                    directionsTo != null && navigating -> Panel.Navigation
+                    measure != null -> Panel.Measure
+                    openTrip != null -> Panel.Trip
+                    directionsTo != null -> Panel.Route
+                    selected != null -> Panel.Place
+                    openListId != null -> Panel.List
+                    else -> Panel.None
+                }
+                // Animating the panel's size makes the location button glide up and down with it.
+                AnimatedContent(
+                    targetState = panel,
+                    transitionSpec = {
+                        (slideInVertically { it / 2 } + fadeIn()) togetherWith (slideOutVertically { it / 2 } + fadeOut()) using
+                            SizeTransform(clip = false)
                     },
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it },
-                    shadowElevation = if (expanded) 0.dp else 4.dp,
-                ) {
-                    val q = query.trim()
-                    // Reserve the bar's height so results don't jump when it appears.
-                    if (searching && q.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    else Spacer(Modifier.height(4.dp))
-                    val here = myLocation()
+                    contentAlignment = Alignment.BottomCenter,
+                    label = "bottomPanel",
+                ) { target ->
+                    // Fall back to the last values so panels keep their content while animating out.
+                    val destination = directionsTo ?: lastDestination
+                    val place = selected ?: lastShownPlace
+                    val panelModifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp)
+                        .animateContentSize()
                     when {
-                        q.isEmpty() -> if (recents.isNotEmpty()) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 16.dp, end = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    "Recent",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = colors.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f),
+                        target == Panel.Measure -> MeasurePanel(
+                            points = measure ?: lastMeasure,
+                            aim = aim,
+                            onAdd = { aim?.let { a -> measure = measure.orEmpty() + a } },
+                            onUndo = { measure = measure?.dropLast(1)?.takeIf { it.isNotEmpty() } ?: measure },
+                            onClose = { measure = null },
+                            modifier = panelModifier,
+                        )
+                        target == Panel.Trip && (openTrip ?: lastTrip) != null -> TripPanel(
+                            ref = openTrip ?: lastTrip!!,
+                            trip = trip,
+                            now = tripNow,
+                            error = tripError,
+                            onBack = { openTrip = null },
+                            onRetry = { tripRequest++ },
+                            modifier = panelModifier,
+                        )
+                        target == Panel.Navigation && destination != null -> NavigationPanel(
+                            route = routes.getOrNull(routeIndex),
+                            progress = progress,
+                            muted = !settings.voiceGuidance,
+                            onToggleMute = {
+                                if (settings.voiceGuidance) voice.stop()
+                                onSettingsChange(settings.copy(voiceGuidance = !settings.voiceGuidance))
+                            },
+                            onEnd = ::stopNavigation,
+                            modifier = panelModifier,
+                        )
+                        target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
+                            itineraries = itineraries,
+                            selected = itineraryIndex,
+                            onSelect = { itineraryIndex = it },
+                            tripTime = tripTime,
+                            onTripTimeChange = { tripTime = it },
+                            loading = routing,
+                            error = routeError,
+                            onRetry = {
+                                if (hasLocationPermission) routeRequest++
+                                else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                            },
+                            onLater = if (transitNextPage != null) ::loadLaterConnections else null,
+                            onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
+                            modifier = panelModifier,
+                        )
+                        target == Panel.Route && destination != null -> RoutePanel(
+                            routes = routes,
+                            selectedIndex = routeIndex,
+                            onSelect = { routeIndex = it },
+                            loading = routing,
+                            error = routeError,
+                            onRetry = {
+                                if (hasLocationPermission) routeRequest++
+                                else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                            },
+                            onStart = ::startNavigation,
+                            onOpenElsewhere = { context.openDirections(destination) },
+                            modifier = panelModifier,
+                        )
+                        target == Panel.List && lists.any { it.id == (openListId ?: lastListId) } -> {
+                            val list = lists.first { it.id == (openListId ?: lastListId) }
+                            PlaceListPanel(
+                                list = list,
+                                here = myLocation(),
+                                onSelect = { select(it) },
+                                onRemove = {
+                                    lists = SavedPlaces.remove(context, list.id, it)
+                                    mapResults = mapResults.filterNot { p -> p.isSameAs(it) }
+                                },
+                                onRename = { lists = SavedPlaces.rename(context, list.id, it) },
+                                onDelete = {
+                                    closeList()
+                                    lists = SavedPlaces.delete(context, list.id)
+                                },
+                                onClose = ::closeList,
+                                modifier = panelModifier,
+                            )
+                        }
+                        target == Panel.Place && place != null -> PlaceCard(
+                            place,
+                            saved = lists.containing(place).isNotEmpty(),
+                            details = details,
+                            wiki = wiki,
+                            loading = detailsLoading,
+                            onSave = { savingPlace = place },
+                            onMeasure = { startMeasuring(place) },
+                            onDirections = { startDirections(place) },
+                            onClose = { selected = null },
+                            modifier = panelModifier,
+                            departures = if (place.departureRadius() != null) {
+                                {
+                                DepartureBoard(
+                                    departures, departuresLoading,
+                                    onOpenTrip = { d -> d.tripRef()?.let(::showTrip) },
+                                    modifier = Modifier.padding(top = 16.dp, end = 12.dp),
                                 )
-                                TextButton(onClick = {
+                            }
+                            } else null,
+                        )
+                        else -> Spacer(Modifier.fillMaxWidth())
+                    }
+                }
+            }
+            if (wide) {
+                // Side by side: the panel in a column on the left, the buttons over the map beside it.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(start = SIDE_PANEL_WIDTH + 32.dp, end = 16.dp, bottom = 16.dp),
+                    horizontalAlignment = Alignment.End,
+                ) { mapButtons() }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .navigationBarsPadding()
+                        .padding(start = 16.dp, bottom = 16.dp)
+                        .width(SIDE_PANEL_WIDTH),
+                ) { panelContent() }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    mapButtons()
+                    panelContent()
+                }
+            }
+
+            val destination = directionsTo
+            // Bars at the top span the screen, or the side column on wide screens.
+            val topWidth = if (wide) Modifier.width(SIDE_PANEL_WIDTH) else Modifier.fillMaxWidth()
+            when {
+                destination != null && navigating -> NavigationBanner(
+                    route = routes.getOrNull(routeIndex),
+                    progress = progress,
+                    destination = destination,
+                    rerouting = routing,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .then(topWidth)
+                        .then(trackTop),
+                )
+                destination != null -> DirectionsHeader(
+                    destination = destination,
+                    mode = travelMode,
+                    onModeChange = { travelMode = it },
+                    onBack = ::exitDirections,
+                    stops = stops,
+                    onAddStop = { picking = PickFor.Stop },
+                    onRemoveStop = { stop -> stops = stops - stop },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .then(topWidth)
+                        .then(trackTop),
+                )
+                else -> {
+                    val sidePadding by animateDpAsState(if (expanded) 0.dp else 16.dp, label = "searchPadding")
+                    // Chips under the bar while just looking at the map; they then mark the top's edge.
+                    val showChips = !expanded && selected == null && openListId == null && settings.quickButtons.isNotEmpty()
+                    var searchBottomPx by remember { mutableIntStateOf(0) }
+                    if (showChips) {
+                        QuickChips(
+                            buttons = settings.quickButtons.mapNotNull { QuickButton.byId(it) },
+                            shortcuts = shortcuts,
+                            loading = categoryLoading,
+                            onShortcut = ::onShortcut,
+                            onCategory = ::showCategory,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(top = with(density) { searchBottomPx.toDp() } + 8.dp)
+                                .then(if (wide) Modifier.width(SIDE_PANEL_WIDTH + 32.dp) else Modifier)
+                                .then(trackTop),
+                        )
+                    }
+                    SearchBar(
+                        modifier = Modifier
+                            .align(if (wide && !expanded) Alignment.TopStart else Alignment.TopCenter)
+                            .padding(horizontal = sidePadding)
+                            .then(if (wide && !expanded) Modifier.width(SIDE_PANEL_WIDTH) else Modifier)
+                            .onGloballyPositioned { if (!expanded) searchBottomPx = it.boundsInRoot().bottom.toInt() }
+                            .then(if (showChips) Modifier else trackTop),
+                        inputField = {
+                            SearchBarDefaults.InputField(
+                                query = query,
+                                onQueryChange = {
+                                    query = it
+                                    resultsOnMap = false
+                                },
+                                onSearch = { showResultsOnMap() },
+                                expanded = expanded,
+                                onExpandedChange = { expanded = it },
+                                placeholder = { Text("Search here") },
+                                leadingIcon = {
+                                    if (expanded) {
+                                        IconButton(onClick = { expanded = false }) {
+                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                        }
+                                    } else {
+                                        Icon(Icons.Filled.Search, contentDescription = null)
+                                    }
+                                },
+                                trailingIcon = {
+                                    if (query.isNotEmpty()) {
+                                        IconButton(onClick = {
+                                            query = ""
+                                            resultsOnMap = false
+                                            selected = null
+                                        }) {
+                                            Icon(Icons.Filled.Close, contentDescription = "Clear")
+                                        }
+                                    } else {
+                                        IconButton(onClick = { showSettings = true }) {
+                                            Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                                        }
+                                    }
+                                },
+                            )
+                        },
+                        expanded = expanded,
+                        onExpandedChange = { expanded = it },
+                        shadowElevation = if (expanded) 0.dp else 4.dp,
+                    ) {
+                        val q = query.trim()
+                        // Reserve the bar's height so results don't jump when it appears.
+                        if (searching && q.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        else Spacer(Modifier.height(4.dp))
+                        val here = myLocation()
+                        when {
+                            q.isEmpty() -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                                if (savedStops.isNotEmpty()) {
+                                    Text(
+                                        "Your stops",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = colors.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+                                    )
+                                    savedStops.take(4).forEach { stop ->
+                                        SavedStopDepartures(stop, savedStopDepartures[stop], onOpenTrip = { d ->
+                                            d.tripRef()?.let {
+                                                expanded = false
+                                                showTrip(it)
+                                            }
+                                        })
+                                    }
+                                }
+                                SavedListsSection(lists, onOpen = ::openList)
+                                if (recents.isNotEmpty()) RecentsSection(recents, here, onPick = ::pickResult, onClear = {
                                     RecentPlaces.clear(context)
                                     recents = emptyList()
-                                }) { Text("Clear") }
+                                })
                             }
-                            LazyColumn {
-                                items(recents) { place ->
-                                    PlaceRow(place, here, onClick = { pickResult(place) }, recent = true)
+                            searchFailed && results.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
+                            results.isEmpty() && resultsFor == q && !searching -> SearchHint("No results for \"$q\"")
+                            else -> LazyColumn {
+                                if (results.size > 1) item {
+                                    AssistChip(
+                                        onClick = ::showResultsOnMap,
+                                        label = { Text("Show all on map") },
+                                        leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                    )
                                 }
-                            }
-                        }
-                        searchFailed && results.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
-                        results.isEmpty() && resultsFor == q && !searching -> SearchHint("No results for \"$q\"")
-                        else -> LazyColumn {
-                            if (results.size > 1) item {
-                                AssistChip(
-                                    onClick = ::showResultsOnMap,
-                                    label = { Text("Show all on map") },
-                                    leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                )
-                            }
-                            items(results) { place ->
-                                PlaceRow(place, here, onClick = { pickResult(place) })
+                                items(results) { place ->
+                                    PlaceRow(place, here, onClick = { pickResult(place) })
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun RecentsSection(recents: List<Place>, here: Location?, onPick: (Place) -> Unit, onClear: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Recent",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onClear) { Text("Clear") }
+    }
+    recents.forEach { place ->
+        PlaceRow(place, here, onClick = { onPick(place) }, recent = true)
     }
 }
 
@@ -1369,6 +2035,12 @@ private fun SearchHint(text: String) {
 @Composable
 private fun PlaceCard(
     place: Place,
+    details: PlaceDetails?,
+    wiki: WikiSummary?,
+    loading: Boolean,
+    saved: Boolean,
+    onSave: () -> Unit,
+    onMeasure: () -> Unit,
     onDirections: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1376,7 +2048,13 @@ private fun PlaceCard(
 ) {
     val context = LocalContext.current
     ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
-        Column(Modifier.padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 20.dp)) {
+        // With a photo, summary and departures it can be taller than a short screen.
+        Column(
+            Modifier
+                .heightIn(max = LocalListMaxHeight.current + 220.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 20.dp)
+        ) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(
                     Modifier
@@ -1410,17 +2088,48 @@ private fun PlaceCard(
                     Icon(Icons.Filled.Close, contentDescription = "Close")
                 }
             }
+            // Say it's coming rather than have hours and a photo pop in out of nowhere.
+            if (loading) {
+                Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Loading details…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            details?.let { PlaceDetailsRows(it) }
+            wiki?.let { WikiCard(it, Modifier.padding(top = 12.dp, end = 12.dp)) }
             Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Button(onClick = onDirections) {
                     Icon(Icons.Filled.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Directions")
                 }
+                OutlinedButton(onClick = onSave) {
+                    Icon(
+                        if (saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (saved) "Saved" else "Save")
+                }
                 OutlinedButton(onClick = { context.sharePlace(place) }) {
                     Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Share")
+                }
+                OutlinedButton(onClick = onMeasure) {
+                    Icon(Icons.Filled.Straighten, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Measure")
                 }
                 OutlinedIconButton(onClick = { context.openPlaceElsewhere(place) }) {
                     Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in another app")
@@ -1428,6 +2137,188 @@ private fun PlaceCard(
             }
             departures?.invoke()
         }
+    }
+}
+
+/** The measured distance so far, including the stretch to the crosshair. */
+@Composable
+private fun MeasurePanel(
+    points: List<LatLng>,
+    aim: LatLng?,
+    onAdd: () -> Unit,
+    onUndo: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val path = points + listOfNotNull(aim)
+    val total = path.zipWithNext { a, b -> a.distanceTo(b) }.sum()
+    ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
+        Column(Modifier.padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(top = 8.dp)) {
+                    Text("Total distance", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatDistance(total), style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Stop measuring") }
+            }
+            Text(
+                "Move the map to aim the crosshair, or tap the map.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onAdd) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Add point")
+                }
+                OutlinedButton(onClick = onUndo, enabled = points.size > 1) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Undo")
+                }
+            }
+        }
+    }
+}
+
+/** A Wikipedia summary with the article's picture, credited and linked as the license asks. */
+@Composable
+private fun WikiCard(summary: WikiSummary, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var expanded by remember(summary) { mutableStateOf(false) }
+    val image by produceState<ImageBitmap?>(null, summary.imageUrl) {
+        value = summary.imageUrl?.let { url ->
+            runCatching {
+                val bytes = httpGetBytes(url)
+                withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+            }.getOrNull()
+        }
+    }
+    Column(modifier) {
+        image?.let {
+            Image(
+                bitmap = it,
+                contentDescription = summary.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .clip(MaterialTheme.shapes.medium),
+            )
+        }
+        Text(
+            summary.extract,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = if (expanded) Int.MAX_VALUE else 4,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .clickable { expanded = !expanded }
+                .animateContentSize(),
+        )
+        Text(
+            "From Wikipedia",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clickable { context.openUri(Uri.parse(summary.url)) }
+                .padding(vertical = 6.dp),
+        )
+    }
+}
+
+/** Whether the place is open now, and how to reach it. */
+@Composable
+private fun PlaceDetailsRows(details: PlaceDetails) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.padding(top = 8.dp)) {
+        details.openingHours?.let { hours ->
+            val state = remember(hours) { OpeningHours.state(hours) }
+            val week = remember(hours) { OpeningHours.week(hours) }
+            var showWeek by remember(hours) { mutableStateOf(false) }
+            Row(
+                Modifier
+                    .then(if (week != null) Modifier.clickable { showWeek = !showWeek } else Modifier)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    state?.text ?: hours,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = when (state?.open) {
+                        true -> colors.tertiary
+                        false -> colors.error
+                        null -> colors.onSurfaceVariant
+                    },
+                )
+                if (week != null) {
+                    Icon(
+                        if (showWeek) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = if (showWeek) "Hide opening hours" else "Show opening hours",
+                        tint = colors.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+            if (showWeek && week != null) {
+                val today = remember { LocalDate.now().dayOfWeek.value - 1 }
+                Column(Modifier.padding(bottom = 4.dp)) {
+                    week.forEachIndexed { i, times ->
+                        val weight = if (i == today) FontWeight.Bold else null
+                        Row(Modifier.padding(vertical = 1.dp)) {
+                            Text(
+                                DayOfWeek.of(i + 1).getDisplayName(TextStyle.FULL, Locale.getDefault()),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = weight,
+                                modifier = Modifier.width(110.dp),
+                            )
+                            Text(times, style = MaterialTheme.typography.bodyMedium, fontWeight = weight)
+                        }
+                    }
+                }
+            }
+        }
+        details.phone?.let { phone ->
+            Row(
+                Modifier
+                    .clickable { context.openUri(Uri.parse("tel:" + phone.filter { it.isDigit() || it == '+' })) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Call, contentDescription = null, tint = colors.primary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(phone, style = MaterialTheme.typography.bodyMedium, color = colors.primary)
+            }
+        }
+        details.website?.let { site ->
+            val url = if (site.startsWith("http")) site else "https://$site"
+            Row(
+                Modifier
+                    .clickable { context.openUri(Uri.parse(url)) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Language, contentDescription = null, tint = colors.primary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    Uri.parse(url).host?.removePrefix("www.") ?: site,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private fun Context.openUri(uri: Uri) {
+    try {
+        startActivity(Intent(Intent.ACTION_VIEW, uri))
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(this, "No app can open this", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -1526,19 +2417,18 @@ private fun locationOptions(context: Context, color: Int, navigating: Boolean): 
 
 /** Hands off to a navigation app (Google Maps, Organic Maps, OsmAnd, ...). */
 private fun Context.openDirections(place: Place) {
-    val uri = Uri.parse("geo:${place.lat},${place.lon}?q=${place.lat},${place.lon}(${Uri.encode(place.name)})")
-    try {
-        startActivity(Intent(Intent.ACTION_VIEW, uri))
-    } catch (e: ActivityNotFoundException) {
-        Toast.makeText(this, "No navigation app installed", Toast.LENGTH_SHORT).show()
-    }
+    // The same as opening the place elsewhere: the other app offers its own directions.
+    openPlaceElsewhere(place)
 }
 
 /** Shows the place in another maps app (Google Maps, Organic Maps, OsmAnd, ...), asking which. */
 private fun Context.openPlaceElsewhere(place: Place) {
     val uri = Uri.parse("geo:${place.lat},${place.lon}?q=${place.lat},${place.lon}(${Uri.encode(place.name)})")
     // The chooser says so itself when no app can open it.
-    startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "Open in"))
+    val chooser = Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "Open in")
+        // We open geo: links too now; showing this place here again would be pointless.
+        .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(this, MainActivity::class.java)))
+    startActivity(chooser)
 }
 
 private fun Context.sharePlace(place: Place) {

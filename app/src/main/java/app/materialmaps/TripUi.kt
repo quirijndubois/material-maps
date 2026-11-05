@@ -139,7 +139,7 @@ private fun TripStops(trip: Trip, boardingStopId: String?, position: TripPositio
         val focus = if (reached in 0 until trip.stops.lastIndex) reached else boarding
         if (focus > 0) state.scrollToItem(focus - 1)
     }
-    LazyColumn(Modifier.heightIn(max = 380.dp), state = state) {
+    LazyColumn(Modifier.heightIn(max = listHeight(380.dp)), state = state) {
         itemsIndexed(trip.stops) { i, stop ->
             val vehicleHere = when (position) {
                 is TripPosition.AtStop -> position.index == i

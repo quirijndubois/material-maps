@@ -25,7 +25,9 @@ import kotlin.math.roundToInt
  * depends on the wallpaper colors.
  */
 object DarkStyle {
-    private const val CACHE_FILE = "liberty-style.json"
+    /** One cache file per style, named after the style's URL. */
+    private fun cacheFile(context: Context, styleUrl: String) =
+        File(context.cacheDir, styleUrl.substringAfterLast('/') + "-style.json")
 
     /** Theme colors (ARGB) the map is built from. */
     class Palette(surface: Int, accent: Int) {
@@ -34,13 +36,13 @@ object DarkStyle {
     }
 
     /** The cached light style, recolored, for an instant start. */
-    suspend fun cached(context: Context, palette: Palette): String? = withContext(Dispatchers.IO) {
-        File(context.cacheDir, CACHE_FILE).takeIf { it.exists() }?.readText()
+    suspend fun cached(context: Context, lightStyleUrl: String, palette: Palette): String? = withContext(Dispatchers.IO) {
+        cacheFile(context, lightStyleUrl).takeIf { it.exists() }?.readText()
     }?.let { withContext(Dispatchers.Default) { runCatching { darken(it, palette) }.getOrNull() } }
 
     /** Downloads the light style (falling back to the cache) and recolors it. */
     suspend fun load(context: Context, lightStyleUrl: String, palette: Palette): String? {
-        val cache = File(context.cacheDir, CACHE_FILE)
+        val cache = cacheFile(context, lightStyleUrl)
         val light = try {
             httpGet(lightStyleUrl).also { json -> withContext(Dispatchers.IO) { cache.writeText(json) } }
         } catch (e: CancellationException) {

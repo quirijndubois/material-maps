@@ -19,19 +19,43 @@ enum class TravelMode(val costing: String, val label: String) {
     Transit("", "Transit"),
 }
 
-/** One turn instruction. [type] is a Valhalla maneuver type; [beginIndex] points into [Route.points]. */
+/**
+ * One turn instruction, in OSRM terms: [type] is like `turn`, `fork` or `roundabout`, and
+ * [modifier] like `left` or `slight right`. [beginIndex] points into [Route.points].
+ */
 data class Maneuver(
-    val type: Int,
+    val type: String,
+    val modifier: String?,
     val instruction: String,
     val distance: Double,
     val duration: Double,
     val beginIndex: Int,
+    /** The lanes at this maneuver, left to right; empty when the map doesn't say. */
+    val lanes: List<Lane> = emptyList(),
 )
+
+/** One lane at a junction: where it goes, and whether it's a lane to be in for the route. */
+data class Lane(val indications: List<String>, val valid: Boolean, val validIndication: String?) {
+    /** The direction to draw: the one the route uses if this is a lane for it. */
+    val shown get() = validIndication ?: indications.firstOrNull() ?: "straight"
+}
+
+/** Something to say [at] meters along the route, such as "In 300 meters, turn left". */
+data class Announcement(val at: Double, val text: String)
+
+/** Speed limits along a route, in km/h, by segment of [Route.points]; null where unknown. */
+class SpeedLimits(private val bySegment: IntArray) {
+    fun at(segment: Int): Int? = bySegment.getOrNull(segment)?.takeIf { it > 0 }
+}
 
 class RouteException(message: String) : Exception(message)
 
 data class RouteProgress(
     val next: Maneuver?,
+    /** Meters along the route. */
+    val traveled: Double,
+    /** Index into [Route.points] of the segment the user is on. */
+    val segment: Int,
     val distanceToNext: Double,
     val remainingDistance: Double,
     val remainingTime: Double,
@@ -49,6 +73,9 @@ class Route(
     /** Seconds. */
     val duration: Double,
     val maneuvers: List<Maneuver>,
+    val announcements: List<Announcement> = emptyList(),
+    /** [points] as Valhalla sent it, for looking up more about the roads. */
+    val shape: String = "",
 ) {
     /** Distance along the route to each point, in meters. */
     private val along = DoubleArray(points.size).also { a ->
@@ -84,6 +111,8 @@ class Route(
         val remaining = (total - bestAlong).coerceAtLeast(0.0)
         return RouteProgress(
             next = next,
+            traveled = bestAlong,
+            segment = bestSegment,
             distanceToNext = (nextAt - bestAlong).coerceAtLeast(0.0),
             remainingDistance = remaining,
             remainingTime = if (total > 0) duration * remaining / total else 0.0,
@@ -112,35 +141,69 @@ class Route(
 /**
  * Turn-by-turn routing with Valhalla on the FOSSGIS server (https://valhalla1.openstreetmap.de),
  * built on OpenStreetMap data. Free, no API key; instructions come in the phone's language.
+ * Answers come in OSRM's format, which adds lanes and timed voice announcements.
  */
 object Valhalla {
-    private const val BASE = "https://valhalla1.openstreetmap.de/route"
+    private const val BASE = "https://valhalla1.openstreetmap.de"
 
-    /** The best route first, then up to two alternatives. */
-    suspend fun route(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double, mode: TravelMode): List<Route> {
+    /** The best route first, then up to two alternatives (none when there are [stops] on the way). */
+    suspend fun route(
+        from: LatLng,
+        stops: List<LatLng>,
+        to: LatLng,
+        mode: TravelMode,
+        settings: Settings,
+    ): List<Route> {
+        // 0 means avoid as far as possible, 0.5 is Valhalla's default.
+        fun use(avoid: Boolean) = if (avoid) 0.0 else 0.5
+        val costing = JSONObject().put("use_ferry", use(settings.avoidFerries))
+        if (mode == TravelMode.Car) {
+            costing.put("use_highways", use(settings.avoidHighways)).put("use_tolls", use(settings.avoidTolls))
+        }
+        val locations = JSONArray()
+        (listOf(from) + stops + to).forEach { locations.put(JSONObject().put("lat", it.latitude).put("lon", it.longitude)) }
         val request = JSONObject()
-            .put(
-                "locations",
-                JSONArray()
-                    .put(JSONObject().put("lat", fromLat).put("lon", fromLon))
-                    .put(JSONObject().put("lat", toLat).put("lon", toLon)),
-            )
+            .put("locations", locations)
             .put("costing", mode.costing)
-            .put("alternates", 2)
+            .put("costing_options", JSONObject().put(mode.costing, costing))
+            .put("alternates", if (stops.isEmpty()) 2 else 0)
+            .put("format", "osrm")
+            .put("voice_instructions", true)
             .put(
                 "directions_options",
                 JSONObject()
-                    .put("units", "kilometers")
+                    .put("units", if (settings.units == Units.Imperial) "miles" else "kilometers")
                     .put("language", Locale.getDefault().toLanguageTag()),
             )
         val json = try {
-            JSONObject(httpGet("$BASE?json=" + URLEncoder.encode(request.toString(), "UTF-8")))
+            JSONObject(httpGet("$BASE/route?json=" + URLEncoder.encode(request.toString(), "UTF-8")))
         } catch (e: HttpException) {
             throw RouteException(errorMessage(e.body))
         }
-        val trips = listOf(json.getJSONObject("trip")) +
-            json.optJSONArray("alternates").orEmpty().map { it.getJSONObject("trip") }
-        return trips.map(::parseTrip)
+        return json.optJSONArray("routes").orEmpty().map(::parseRoute)
+    }
+
+    /** Speed limits along [route], matched from its shape; driving only. */
+    suspend fun speedLimits(route: Route): SpeedLimits {
+        val request = JSONObject()
+            .put("encoded_polyline", route.shape)
+            .put("shape_match", "edge_walk")
+            .put("costing", "auto")
+            .put(
+                "filters",
+                JSONObject()
+                    .put("attributes", JSONArray().put("edge.speed_limit").put("edge.begin_shape_index").put("edge.end_shape_index"))
+                    .put("action", "include"),
+            )
+        val json = JSONObject(httpGet("$BASE/trace_attributes?json=" + URLEncoder.encode(request.toString(), "UTF-8")))
+        val limits = IntArray((route.points.size - 1).coerceAtLeast(0))
+        json.optJSONArray("edges").orEmpty().map { edge ->
+            val limit = edge.optInt("speed_limit", 0)
+            val begin = edge.optInt("begin_shape_index", 0).coerceIn(0, limits.size)
+            val end = edge.optInt("end_shape_index", 0).coerceIn(begin, limits.size)
+            for (i in begin until end) limits[i] = limit
+        }
+        return SpeedLimits(limits)
     }
 
     private fun errorMessage(body: String): String {
@@ -153,27 +216,63 @@ object Valhalla {
         }
     }
 
-    private fun parseTrip(trip: JSONObject): Route {
-        val summary = trip.getJSONObject("summary")
-        val leg = trip.getJSONArray("legs").getJSONObject(0)
-        val maneuvers = leg.getJSONArray("maneuvers").map { m ->
-            Maneuver(
-                type = m.optInt("type"),
-                instruction = m.optString("instruction"),
-                distance = m.optDouble("length", 0.0) * 1000,
-                duration = m.optDouble("time", 0.0),
-                beginIndex = m.optInt("begin_shape_index"),
-            )
+    private fun parseRoute(route: JSONObject): Route {
+        val shape = route.getString("geometry")
+        val points = decodePolyline(shape)
+        val maneuvers = ArrayList<Maneuver>()
+        val announcements = ArrayList<Announcement>()
+        var stepStart = 0.0
+        var searchFrom = 0
+        route.getJSONArray("legs").map { leg ->
+            leg.getJSONArray("steps").map { step ->
+                val m = step.getJSONObject("maneuver")
+                val location = m.getJSONArray("location")
+                val at = LatLng(location.getDouble(1), location.getDouble(0))
+                // Steps come in order and start on a point of the line, so look onward from the
+                // last one; the closest point is only a fallback, as a route can pass by twice.
+                val index = (searchFrom until points.size).firstOrNull { metersBetween(points[it], at) < 1.0 }
+                    ?: (searchFrom until points.size).minByOrNull { metersBetween(points[it], at) }
+                    ?: searchFrom
+                searchFrom = index
+                val distance = step.optDouble("distance", 0.0)
+                val type = m.optString("type")
+                maneuvers += Maneuver(
+                    type = type,
+                    modifier = m.optString("modifier").ifBlank { null },
+                    instruction = m.optString("instruction"),
+                    distance = distance,
+                    duration = step.optDouble("duration", 0.0),
+                    beginIndex = index,
+                    lanes = step.optJSONArray("intersections")?.optJSONObject(0)?.optJSONArray("lanes").orEmpty().map { lane ->
+                        Lane(
+                            indications = lane.optJSONArray("indications").strings(),
+                            valid = lane.optBoolean("valid"),
+                            validIndication = lane.optString("valid_indication").ifBlank { null },
+                        )
+                    },
+                )
+                // Each announcement says how far before the end of its step to speak it.
+                step.optJSONArray("voiceInstructions").orEmpty().map { v ->
+                    announcements += Announcement(
+                        at = stepStart + distance - v.optDouble("distanceAlongGeometry", 0.0),
+                        text = v.optString("announcement"),
+                    )
+                }
+                stepStart += distance
+            }
         }
         return Route(
-            points = decodePolyline(leg.getString("shape")),
-            distance = summary.optDouble("length", 0.0) * 1000,
-            duration = summary.optDouble("time", 0.0),
+            points = points,
+            distance = route.optDouble("distance", 0.0),
+            duration = route.optDouble("duration", 0.0),
             maneuvers = maneuvers,
+            announcements = announcements.filter { it.text.isNotBlank() }.sortedBy { it.at },
+            shape = shape,
         )
     }
 
     private fun JSONArray?.orEmpty() = this ?: JSONArray()
+    private fun JSONArray?.strings() = this?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
     private fun <T> JSONArray.map(transform: (JSONObject) -> T) = (0 until length()).map { transform(getJSONObject(it)) }
 }
 
@@ -214,7 +313,18 @@ private fun metersBetween(a: LatLng, b: LatLng): Double {
     return 2 * EARTH_RADIUS * atan2(sqrt(h), sqrt(1 - h))
 }
 
-fun formatDistance(meters: Double): String = when {
+/** Follows the units setting. */
+@Volatile
+var distanceUnits = Units.Metric
+
+fun formatDistance(meters: Double): String = if (distanceUnits == Units.Imperial) {
+    val miles = meters / 1609.344
+    when {
+        miles < 0.1 -> "${((meters * 3.28084 / 50).roundToInt() * 50).coerceAtLeast(10)} ft"
+        miles < 10 -> String.format(Locale.getDefault(), "%.1f mi", miles)
+        else -> "${miles.roundToInt()} mi"
+    }
+} else when {
     meters < 1000 -> "${((meters / 10).roundToInt() * 10)} m"
     meters < 10_000 -> String.format(Locale.getDefault(), "%.1f km", meters / 1000)
     else -> "${(meters / 1000).roundToInt()} km"

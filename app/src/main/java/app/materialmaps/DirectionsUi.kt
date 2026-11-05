@@ -3,6 +3,18 @@
 package app.materialmaps
 
 import android.text.format.DateFormat
+import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.ForkLeft
+import androidx.compose.material.icons.filled.ForkRight
+import androidx.compose.material.icons.filled.RoundaboutLeft
+import androidx.compose.material3.LocalContentColor
+import kotlin.math.roundToInt
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -115,24 +127,67 @@ private val TravelMode.icon: ImageVector
         TravelMode.Transit -> Icons.Filled.DirectionsTransit
     }
 
-/** Valhalla maneuver types: https://valhalla.github.io/valhalla/api/turn-by-turn/api-reference/ */
-private fun maneuverIcon(type: Int): ImageVector = when (type) {
-    1, 2, 3 -> Icons.Filled.TripOrigin
-    4, 5, 6 -> Icons.Filled.Flag
-    9, 23 -> Icons.Filled.TurnSlightRight
-    10 -> Icons.Filled.TurnRight
-    11 -> Icons.Filled.TurnSharpRight
-    12 -> Icons.Filled.UTurnRight
-    13 -> Icons.Filled.UTurnLeft
-    14 -> Icons.Filled.TurnSharpLeft
-    15 -> Icons.Filled.TurnLeft
-    16, 24 -> Icons.Filled.TurnSlightLeft
-    18, 20 -> Icons.Filled.RampRight
-    19, 21 -> Icons.Filled.RampLeft
-    25, 37, 38 -> Icons.Filled.Merge
-    26, 27 -> Icons.Filled.RoundaboutRight
-    28, 29 -> Icons.Filled.DirectionsBoat
+/** OSRM maneuver types and modifiers: https://project-osrm.org/docs/v5.24.0/api/#stepmaneuver-object */
+private fun maneuverIcon(m: Maneuver?): ImageVector = when (m?.type) {
+    null -> Icons.Filled.Straight
+    "depart" -> Icons.Filled.TripOrigin
+    "arrive" -> Icons.Filled.Flag
+    "merge" -> Icons.Filled.Merge
+    "roundabout", "rotary", "roundabout turn", "exit roundabout", "exit rotary" ->
+        if (m.modifier?.contains("left") == true && m.type == "roundabout turn") Icons.Filled.RoundaboutLeft
+        else Icons.Filled.RoundaboutRight
+    "on ramp", "off ramp" -> when {
+        m.modifier?.contains("left") == true -> Icons.Filled.RampLeft
+        else -> Icons.Filled.RampRight
+    }
+    "fork" -> if (m.modifier?.contains("left") == true) Icons.Filled.ForkLeft else Icons.Filled.ForkRight
+    else -> directionIcon(m.modifier ?: "straight")
+}
+
+/** An arrow for a direction like `left`, `slight right` or `uturn`, as used by turns and lanes. */
+private fun directionIcon(direction: String): ImageVector = when (direction) {
+    "uturn" -> Icons.Filled.UTurnLeft
+    "sharp right" -> Icons.Filled.TurnSharpRight
+    "right" -> Icons.Filled.TurnRight
+    "slight right" -> Icons.Filled.TurnSlightRight
+    "slight left" -> Icons.Filled.TurnSlightLeft
+    "left" -> Icons.Filled.TurnLeft
+    "sharp left" -> Icons.Filled.TurnSharpLeft
     else -> Icons.Filled.Straight
+}
+
+/** The lanes at the next junction, with the ones to be in lit up. */
+@Composable
+private fun LaneRow(lanes: List<Lane>, modifier: Modifier = Modifier) {
+    val content = LocalContentColor.current
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        lanes.forEach { lane ->
+            Icon(
+                directionIcon(lane.shown),
+                contentDescription = null,
+                tint = if (lane.valid) content else content.copy(alpha = 0.35f),
+                modifier = Modifier.size(28.dp),
+            )
+        }
+    }
+}
+
+/** A round speed limit sign, in km/h or mph as the settings say. */
+@Composable
+fun SpeedLimitSign(kmh: Int, modifier: Modifier = Modifier) {
+    val value = if (distanceUnits == Units.Imperial) ((kmh / 1.609344) / 5).roundToInt() * 5 else kmh
+    Surface(
+        shape = CircleShape,
+        color = Color.White,
+        contentColor = Color.Black,
+        border = BorderStroke(5.dp, Color(0xFFD32F2F)),
+        shadowElevation = 4.dp,
+        modifier = modifier.size(56.dp).semantics { contentDescription = "Speed limit $value" },
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(value.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+    }
 }
 
 private fun etaText(context: android.content.Context, seconds: Double): String =
@@ -144,8 +199,13 @@ fun DirectionsHeader(
     mode: TravelMode,
     onModeChange: (TravelMode) -> Unit,
     onBack: () -> Unit,
+    stops: List<Place>,
+    onAddStop: () -> Unit,
+    onRemoveStop: (Place) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Public transport plans from A to B only.
+    val withStops = mode != TravelMode.Transit
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
@@ -170,6 +230,25 @@ fun DirectionsHeader(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (withStops) stops.forEach { stop ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.TripOrigin, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                stop.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(onClick = { onRemoveStop(stop) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Filled.Close, contentDescription = "Remove stop", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Filled.Place, contentDescription = null,
@@ -181,7 +260,13 @@ fun DirectionsHeader(
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
+                        if (withStops) {
+                            IconButton(onClick = onAddStop, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Filled.AddLocationAlt, contentDescription = "Add stop", modifier = Modifier.size(20.dp))
+                            }
+                        }
                     }
                 }
             }
@@ -290,13 +375,13 @@ fun RoutePanel(
                     AnimatedVisibility(showSteps) {
                         LazyColumn(
                             Modifier
-                                .heightIn(max = 280.dp)
+                                .heightIn(max = listHeight(280.dp))
                                 .padding(top = 8.dp)
                         ) {
                             items(route.maneuvers) { m ->
                                 ListItem(
                                     headlineContent = { Text(m.instruction) },
-                                    leadingContent = { Icon(maneuverIcon(m.type), contentDescription = null) },
+                                    leadingContent = { Icon(maneuverIcon(m), contentDescription = null) },
                                     trailingContent = if (m.distance > 0) {
                                         { Text(formatDistance(m.distance), style = MaterialTheme.typography.labelMedium) }
                                     } else null,
@@ -331,7 +416,7 @@ fun NavigationBanner(
     ) {
         Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                if (arrived) Icons.Filled.Flag else maneuverIcon(next?.type ?: 8),
+                if (arrived) Icons.Filled.Flag else maneuverIcon(next),
                 contentDescription = null,
                 modifier = Modifier.size(44.dp),
             )
@@ -357,6 +442,11 @@ fun NavigationBanner(
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        // Lanes matter coming up to the junction, not kilometers before it.
+                        val lanes = next?.lanes.orEmpty()
+                        if (lanes.size > 1 && lanes.any { !it.valid } && (progress?.distanceToNext ?: 0.0) < 1000) {
+                            LaneRow(lanes, Modifier.padding(top = 8.dp))
+                        }
                     }
                 }
             }
@@ -365,7 +455,14 @@ fun NavigationBanner(
 }
 
 @Composable
-fun NavigationPanel(route: Route?, progress: RouteProgress?, onEnd: () -> Unit, modifier: Modifier = Modifier) {
+fun NavigationPanel(
+    route: Route?,
+    progress: RouteProgress?,
+    muted: Boolean,
+    onToggleMute: () -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val time = progress?.remainingTime ?: route?.duration ?: 0.0
     val distance = progress?.remainingDistance ?: route?.distance ?: 0.0
@@ -381,6 +478,12 @@ fun NavigationPanel(route: Route?, progress: RouteProgress?, onEnd: () -> Unit, 
                     "${formatDistance(distance)} · arrive ${etaText(context, time)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onToggleMute) {
+                Icon(
+                    if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = if (muted) "Turn voice on" else "Mute voice",
                 )
             }
             FilledTonalButton(onClick = onEnd) { Text("End") }

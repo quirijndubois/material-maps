@@ -1,0 +1,9 @@
+• Spoken directions, lane guidance and speed limits
+• Navigation keeps going in the background, with the next turn in a notification
+• Route overview, re-center and speed-based zoom while driving
+• Stops along the way
+• Favourites and your own lists, with export and import
+• Home and Work shortcuts; quick searches for food, fuel, charging and more
+• Opening hours, phone and website on place cards
+• Every stop and live times of a bus, tram or train
+• Offline maps, map styles and settings

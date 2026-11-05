@@ -53,6 +53,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +71,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.util.Calendar
 import java.util.Date
+
+/**
+ * The most a list in a panel may take up, so panels fit the screen: lists keep their own
+ * cap on a tall phone and shrink on a short or landscape one.
+ */
+val LocalListMaxHeight = compositionLocalOf { 380.dp }
+
+/** [height], or less if the screen is short. */
+@Composable
+fun listHeight(height: Dp): Dp = minOf(height, LocalListMaxHeight.current)
 
 fun transitModeIcon(mode: String): ImageVector = when (mode) {
     "WALK" -> Icons.AutoMirrored.Filled.DirectionsWalk
@@ -186,7 +198,7 @@ fun TransitPanel(
                     TextButton(onClick = onRetry, modifier = Modifier.padding(top = 4.dp)) { Text("Try again") }
                 }
                 itinerary != null -> ItineraryDetails(itinerary, onBack = { onSelect(null) }, onOpenTrip = onOpenTrip)
-                else -> LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                else -> LazyColumn(Modifier.heightIn(max = listHeight(380.dp))) {
                     itemsIndexed(itineraries) { i, it ->
                         if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                         ItineraryRow(it, onClick = { onSelect(i) })
@@ -299,7 +311,7 @@ private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit, onOpenTri
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    LazyColumn(Modifier.heightIn(max = 380.dp)) {
+    LazyColumn(Modifier.heightIn(max = listHeight(380.dp))) {
         items(itinerary.legs) { leg -> LegRow(leg, onClick = if (leg.tripId != null) ({ onOpenTrip(leg) }) else null) }
     }
 }
@@ -493,7 +505,7 @@ fun DepartureBoard(
                         }
                     }
                 }
-                LazyColumn(Modifier.heightIn(max = 240.dp).padding(top = 4.dp)) {
+                LazyColumn(Modifier.heightIn(max = listHeight(240.dp)).padding(top = 4.dp)) {
                     items(departures.filter { transitKind(it.mode) == active }) { d -> DepartureRow(d, onClick = { onOpenTrip(d) }) }
                 }
             }
@@ -536,6 +548,23 @@ private fun DepartureRow(d: Departure, onClick: () -> Unit) {
                 }
                 DelayText(d.delayMinutes, d.realTime, d.cancelled)
             }
+        }
+    }
+}
+
+/** The next few departures from a saved stop, for the search panel. */
+@Composable
+fun SavedStopDepartures(stop: Place, departures: List<Departure>?, onOpenTrip: (Departure) -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text(stop.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        when {
+            departures == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
+            departures.isEmpty() -> Text(
+                "No departures soon",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> departures.take(3).forEach { d -> DepartureRow(d, onClick = { onOpenTrip(d) }) }
         }
     }
 }

@@ -8,7 +8,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class Place(
@@ -198,9 +197,6 @@ object RecentPlaces {
     }
 
     fun clear(context: Context) = prefs(context).edit().remove(KEY).apply()
-
-    private fun Place.isSameAs(other: Place) =
-        name == other.name && abs(lat - other.lat) < 1e-4 && abs(lon - other.lon) < 1e-4
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }
