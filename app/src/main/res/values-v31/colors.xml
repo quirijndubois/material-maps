@@ -1,0 +1,4 @@
+<resources>
+    <!-- Matches the dynamic primary color (tone 40). -->
+    <color name="location_arrow">@android:color/system_accent1_600</color>
+</resources>

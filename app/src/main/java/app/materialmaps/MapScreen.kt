@@ -51,12 +51,15 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -109,6 +112,8 @@ import org.maplibre.android.location.LocationComponent
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.OnCameraTrackingChangedListener
+import org.maplibre.android.location.engine.LocationEngine
+import org.maplibre.android.location.engine.LocationEngineDefault
 import org.maplibre.android.location.engine.LocationEngineRequest
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
@@ -128,6 +133,7 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.min
 
 // Free OpenStreetMap vector tiles, no API key needed (https://openfreemap.org). Dark mode
@@ -174,6 +180,7 @@ fun MapScreen() {
     fun dp(value: Int) = with(density) { value.dp.roundToPx() }
 
     val mapView = rememberMapViewWithLifecycle()
+    val headingEngine = remember { RouteHeadingEngine(LocationEngineDefault.getDefaultLocationEngine(context)) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var style by remember { mutableStateOf<Style?>(null) }
     var bearing by remember { mutableFloatStateOf(0f) }
@@ -207,6 +214,9 @@ fun MapScreen() {
     var navigating by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<RouteProgress?>(null) }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
+    var overview by remember { mutableStateOf(false) }
+    // Where the route overview button goes back to; null means following the user.
+    var beforeOverview by remember { mutableStateOf<CameraPosition?>(null) }
     var itineraries by remember { mutableStateOf(emptyList<Itinerary>()) }
     var itineraryIndex by remember { mutableStateOf<Int?>(null) }
     var transitNextPage by remember { mutableStateOf<String?>(null) }
@@ -242,10 +252,32 @@ fun MapScreen() {
             wantsTracking = true
             return
         }
-        if (navigating) {
+        overview = false
+        val here = component.lastKnownLocation
+        val m = map
+        if (navigating && here != null && m != null) {
+            // The driving view: heading up, tilted, with the user low on screen to see the road
+            // ahead. Fly there first, then follow: MapLibre drops zoom, tilt and padding changes
+            // made while it's still moving the camera into tracking mode.
+            val driving = CameraPosition.Builder()
+                .target(LatLng(here.latitude, here.longitude))
+                .zoom(17.0)
+                .tilt(50.0)
+                .bearing(if (here.hasBearing()) here.bearing.toDouble() else m.cameraPosition.bearing)
+                .padding(0.0, mapView.height * 0.4, 0.0, 0.0)
+                .build()
+            follow = Follow.Zoomed
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(driving), 800, object : MapLibreMap.CancelableCallback {
+                override fun onFinish() {
+                    if (navigating) component.cameraMode = CameraMode.TRACKING_GPS
+                }
+                override fun onCancel() {
+                    follow = Follow.Off
+                }
+            })
+            return
+        } else if (navigating) {
             component.cameraMode = CameraMode.TRACKING_GPS
-            component.zoomWhileTracking(17.0)
-            component.tiltWhileTracking(45.0)
         } else {
             component.cameraMode = CameraMode.TRACKING
             component.zoomWhileTracking(15.0)
@@ -341,16 +373,43 @@ fun MapScreen() {
 
     fun stopNavigation() {
         navigating = false
+        overview = false
         progress = null
         locationComponent()?.apply {
             cameraMode = CameraMode.NONE
-            renderMode = RenderMode.COMPASS
+            setNavigationPuck(context, accent, navigating = false)
         }
         map?.let { m ->
             m.animateCamera(
-                CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(m.cameraPosition).tilt(0.0).build()),
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder(m.cameraPosition).tilt(0.0).padding(0.0, 0.0, 0.0, 0.0).build()
+                ),
                 500,
             )
+        }
+    }
+
+    /** While navigating: the whole route from here to the destination, north up. Again goes back. */
+    fun toggleRouteOverview() {
+        val m = map ?: return
+        if (overview) {
+            val back = beforeOverview
+            if (back == null) followMe()
+            else {
+                overview = false
+                m.animateCamera(CameraUpdateFactory.newCameraPosition(back), 700)
+            }
+            return
+        }
+        val route = routes.getOrNull(routeIndex) ?: return
+        beforeOverview = if (follow != Follow.Off) null else m.cameraPosition
+        stopTracking()
+        overview = true
+        val here = myLocation()?.let { LatLng(it.latitude, it.longitude) }
+        val bounds = LatLngBounds.Builder().includes(route.points + listOfNotNull(here)).build()
+        val padding = intArrayOf(dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(200))
+        runCatching { m.getCameraForLatLngBounds(bounds, padding, 0.0, 0.0) }.getOrNull()?.let {
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(it), 700)
         }
     }
 
@@ -390,7 +449,7 @@ fun MapScreen() {
     fun startNavigation() {
         navigating = true
         progress = null
-        locationComponent()?.renderMode = RenderMode.GPS
+        locationComponent()?.setNavigationPuck(context, accent, navigating = true)
         followMe()
     }
 
@@ -503,6 +562,10 @@ fun MapScreen() {
                 // Credits (including the map's attribution) live behind our own button.
                 isAttributionEnabled = false
             }
+            // Moving the map by hand leaves the route overview; its button then shows it again.
+            m.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) overview = false
+            }
             m.addOnCameraMoveListener {
                 bearing = m.cameraPosition.bearing.toFloat()
                 tilt = m.cameraPosition.tilt.toFloat()
@@ -583,7 +646,7 @@ fun MapScreen() {
         val m = map ?: return@LaunchedEffect
         val s = style ?: return@LaunchedEffect
         if (!hasLocationPermission) return@LaunchedEffect
-        m.enableLocation(context, s, accent, gps = navigating) { following -> if (!following) follow = Follow.Off }
+        m.enableLocation(context, s, headingEngine, accent, gps = navigating) { following -> if (!following) follow = Follow.Off }
         if (wantsTracking) {
             wantsTracking = false
             // Tracking only zooms once there is a fix, so wait for the first one (usually the
@@ -810,11 +873,21 @@ fun MapScreen() {
         if (!navigating) return@LaunchedEffect
         val route = routes.getOrNull(routeIndex) ?: return@LaunchedEffect
         var offRouteTicks = 0
+        var speed = 0f
         while (true) {
             val here = myLocation()
             if (here != null) {
                 val p = route.progress(here.latitude, here.longitude)
                 progress = p
+                // Smoothed, so one odd GPS reading doesn't make the map jump.
+                if (here.hasSpeed()) speed += (here.speed - speed) * 0.3f
+                val component = locationComponent()
+                if (follow != Follow.Off && component?.cameraMode == CameraMode.TRACKING_GPS) {
+                    val zoom = drivingZoom(speed, p)
+                    if (abs(zoom - (map?.cameraPosition?.zoom ?: zoom)) > 0.2) {
+                        component.zoomWhileTracking(zoom, 1500)
+                    }
+                }
                 val off = p.offRoute > 50 && here.accuracy < 50 && !p.arrived
                 offRouteTicks = if (off) offRouteTicks + 1 else 0
                 val now = System.currentTimeMillis()
@@ -825,6 +898,11 @@ fun MapScreen() {
             }
             delay(1000)
         }
+    }
+
+    // While navigating, the arrow and the map point along the route rather than where the phone points.
+    LaunchedEffect(navigating, routes, routeIndex) {
+        headingEngine.route = if (navigating) routes.getOrNull(routeIndex) else null
     }
 
     // Keep the screen on while navigating.
@@ -883,7 +961,35 @@ fun MapScreen() {
             horizontalAlignment = Alignment.End,
         ) {
             val following = follow != Follow.Off
-            FloatingActionButton(
+            if (navigating && directionsTo != null) {
+                // Like a car navigation app: see the whole route, then jump back to the driving view.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                    AnimatedVisibility(
+                        visible = !following,
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut(),
+                    ) {
+                        ExtendedFloatingActionButton(
+                            onClick = ::followMe,
+                            icon = { Icon(Icons.Filled.Navigation, contentDescription = null) },
+                            text = { Text("Re-center") },
+                            containerColor = colors.surfaceContainerHigh,
+                            contentColor = colors.primary,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    FloatingActionButton(
+                        onClick = ::toggleRouteOverview,
+                        containerColor = if (overview) colors.primaryContainer else colors.surfaceContainerHigh,
+                    ) {
+                        Icon(
+                            Icons.Filled.Route,
+                            contentDescription = "Route overview",
+                            tint = if (overview) colors.onPrimaryContainer else colors.primary,
+                        )
+                    }
+                }
+            } else FloatingActionButton(
                 onClick = {
                     if (hasLocationPermission) onLocateClick()
                     else permissionLauncher.launch(LOCATION_PERMISSIONS)
@@ -1195,24 +1301,17 @@ private fun Context.hasLocationPermission(): Boolean = LOCATION_PERMISSIONS.any 
 private fun MapLibreMap.enableLocation(
     context: Context,
     style: Style,
+    engine: LocationEngine,
     color: Int,
     gps: Boolean,
     onTrackingChanged: (Boolean) -> Unit,
 ) {
     val component = locationComponent
     if (!component.isLocationComponentActivated) {
-        val options = LocationComponentOptions.builder(context)
-            .foregroundTintColor(color)
-            .bearingTintColor(color)
-            // Our heading engine already updates smoothly; animating each reading only adds lag.
-            .compassAnimationEnabled(false)
-            .accuracyColor(color)
-            .accuracyAlpha(0.15f)
-            .build()
         component.activateLocationComponent(
             LocationComponentActivationOptions.builder(context, style)
-                .locationComponentOptions(options)
-                .useDefaultLocationEngine(true)
+                .locationComponentOptions(locationOptions(context, color, gps))
+                .locationEngine(engine)
                 // The native indicator layer just takes a new position and bearing. The default
                 // one rebuilds a GeoJSON source on each update, which with live heading kept
                 // every tile worker busy and made panning stutter.
@@ -1236,7 +1335,35 @@ private fun MapLibreMap.enableLocation(
         })
     }
     component.isLocationComponentEnabled = true
-    component.renderMode = if (gps) RenderMode.GPS else RenderMode.COMPASS
+    component.setNavigationPuck(context, color, gps)
+}
+
+/** The blue dot with a heading cone normally; a direction arrow while navigating. */
+private fun LocationComponent.setNavigationPuck(context: Context, color: Int, navigating: Boolean) {
+    applyStyle(locationOptions(context, color, navigating))
+    renderMode = if (navigating) RenderMode.GPS else RenderMode.COMPASS
+}
+
+private fun locationOptions(context: Context, color: Int, navigating: Boolean): LocationComponentOptions {
+    val builder = LocationComponentOptions.builder(context)
+        .bearingTintColor(color)
+        // Our heading engine already updates smoothly; animating each reading only adds lag.
+        .compassAnimationEnabled(false)
+        .accuracyColor(color)
+        .accuracyAlpha(0.15f)
+    return if (navigating) {
+        // MapLibre tints the whole arrow, which would hide its outline, so it carries its own
+        // colors. Its white ring would sit under the arrow, so that goes.
+        builder
+            .gpsDrawable(R.drawable.location_arrow)
+            .foregroundTintColor(null)
+            .backgroundDrawable(R.drawable.location_none)
+            .backgroundDrawableStale(R.drawable.location_none)
+            .accuracyAlpha(0f)
+            .build()
+    } else {
+        builder.foregroundTintColor(color).build()
+    }
 }
 
 /** Hands off to a navigation app (Google Maps, Organic Maps, OsmAnd, ...). */
@@ -1279,4 +1406,17 @@ private fun poiPlace(feature: Feature, tap: LatLng): Place? {
         )
         else -> Place(name = name, subtitle = "", lat = lat, lon = lon, type = subclass ?: kind)
     }
+}
+
+/**
+ * How far to zoom the driving view: close in town, further out the faster the road, so there's
+ * always some seconds of road ahead on screen. Coming up to a turn it zooms back in to show it.
+ */
+private fun drivingZoom(speed: Float, progress: RouteProgress): Double {
+    // 17.5 up to about 30 km/h, down to 15 at about 120 km/h.
+    val bySpeed = 17.5 - ((speed - 8.0) / 25.0).coerceIn(0.0, 1.0) * 2.5
+    // Two hundred meters ahead in town; on a highway exit about ten seconds ahead.
+    val turnSoon = progress.next != null && !progress.arrived &&
+        progress.distanceToNext < maxOf(200.0, speed * 10.0)
+    return if (turnSoon) maxOf(bySpeed, 16.5) else bySpeed
 }

@@ -1,0 +1,13 @@
+<!-- The user's position while navigating: an arrow pointing where they're heading. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@color/location_arrow"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineJoin="round"
+        android:pathData="M12,2.5L4.8,19.8L5.4,20.4L12,17.6L18.6,20.4L19.2,19.8Z" />
+</vector>

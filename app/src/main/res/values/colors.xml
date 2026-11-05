@@ -1,4 +1,6 @@
 <resources>
     <color name="window_background">#F2F3EE</color>
     <color name="ic_launcher_background">#1B6B50</color>
+    <!-- The theme primary, for drawables MapLibre draws untinted. -->
+    <color name="location_arrow">#1B6B50</color>
 </resources>

@@ -1,3 +1,4 @@
 <resources>
     <color name="window_background">#1A1C1A</color>
+    <color name="location_arrow">#8AD6B4</color>
 </resources>

@@ -36,6 +36,8 @@ data class RouteProgress(
     val remainingDistance: Double,
     val remainingTime: Double,
     val offRoute: Double,
+    /** Compass direction of the route just ahead, in degrees. */
+    val heading: Double,
 ) {
     val arrived get() = remainingDistance < 25
 }
@@ -59,6 +61,7 @@ class Route(
         var best = Double.MAX_VALUE
         var bestSegment = 0
         var bestAlong = 0.0
+        var bestT = 0.0
         for (i in 0 until points.size - 1) {
             // Flat local coordinates in meters around the current position; fine at these distances.
             val ax = (points[i].longitude - lon) * cosLat * METERS_PER_DEGREE
@@ -71,6 +74,7 @@ class Route(
             if (d < best) {
                 best = d
                 bestSegment = i
+                bestT = t
                 bestAlong = along[i] + t * (along[i + 1] - along[i])
             }
         }
@@ -84,7 +88,24 @@ class Route(
             remainingDistance = remaining,
             remainingTime = if (total > 0) duration * remaining / total else 0.0,
             offRoute = best,
+            heading = headingAt(bestSegment, bestT, bestAlong),
         )
+    }
+
+    /**
+     * Where the route goes from a point on it: towards the spot [HEADING_LOOKAHEAD] meters further
+     * on, so the direction turns smoothly into a corner instead of snapping round at it.
+     */
+    private fun headingAt(segment: Int, t: Double, at: Double): Double {
+        if (points.size < 2) return 0.0
+        val from = points[segment].interpolate(points[segment + 1], t)
+        val target = at + HEADING_LOOKAHEAD
+        val i = (segment + 1 until points.size).firstOrNull { along[it] >= target }
+        val to = if (i == null) points.last()
+        else points[i - 1].interpolate(points[i], (target - along[i - 1]) / (along[i] - along[i - 1]).coerceAtLeast(1e-6))
+        // Close to the end, look back along the last stretch instead.
+        return if (metersBetween(from, to) > 1) bearingBetween(from, to)
+        else bearingBetween(points[points.size - 2], points.last())
     }
 }
 
@@ -206,4 +227,19 @@ fun formatDuration(seconds: Double): String {
         minutes % 60 == 0 -> "${minutes / 60} h"
         else -> "${minutes / 60} h ${minutes % 60} min"
     }
+}
+
+private const val HEADING_LOOKAHEAD = 25.0
+
+private fun LatLng.interpolate(other: LatLng, t: Double) =
+    LatLng(latitude + (other.latitude - latitude) * t, longitude + (other.longitude - longitude) * t)
+
+/** Initial compass bearing from [a] to [b], 0..360 degrees. */
+fun bearingBetween(a: LatLng, b: LatLng): Double {
+    val lat1 = Math.toRadians(a.latitude)
+    val lat2 = Math.toRadians(b.latitude)
+    val dLon = Math.toRadians(b.longitude - a.longitude)
+    val y = sin(dLon) * cos(lat2)
+    val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+    return (Math.toDegrees(atan2(y, x)) + 360) % 360
 }
