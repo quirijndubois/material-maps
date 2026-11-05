@@ -1,0 +1,19 @@
+# Build output
+build/
+.gradle/
+.kotlin/
+.cxx/
+.externalNativeBuild/
+captures/
+app/release/
+app/debug/
+dist/
+*.apk
+*.aab
+
+# Local machine and IDE
+local.properties
+*.iml
+.idea/
+.DS_Store
+*.hprof
