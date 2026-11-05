@@ -5,11 +5,15 @@ import org.json.JSONObject
 import org.maplibre.android.geometry.LatLng
 import java.net.URLEncoder
 import java.time.Instant
+import kotlin.math.cos
+import kotlin.math.hypot
 
 /** A ride or a walk within a public transport journey. Times are epoch millis. */
 data class TransitLeg(
     /** MOTIS mode, such as WALK, BUS, TRAM, SUBWAY, FERRY or REGIONAL_RAIL. */
     val mode: String,
+    /** For looking up the whole trip; rides only. */
+    val tripId: String?,
     val line: String?,
     val headsign: String?,
     val agency: String?,
@@ -17,6 +21,7 @@ data class TransitLeg(
     val color: String?,
     val textColor: String?,
     val fromName: String,
+    val fromStopId: String?,
     val fromTrack: String?,
     val toName: String,
     val toTrack: String?,
@@ -42,12 +47,14 @@ data class Itinerary(val legs: List<TransitLeg>, val departure: Long, val arriva
 data class TransitPlan(val itineraries: List<Itinerary>, val nextPage: String?)
 
 data class Departure(
+    val tripId: String?,
     val mode: String,
     val line: String,
     val headsign: String,
     val color: String?,
     val textColor: String?,
     val stopName: String,
+    val stopId: String?,
     val track: String?,
     val time: Long,
     val scheduled: Long,
@@ -55,6 +62,107 @@ data class Departure(
     val cancelled: Boolean,
 ) {
     val delayMinutes get() = ((time - scheduled) / 60_000).toInt()
+}
+
+/** One stop of a [Trip]. Times are epoch millis, live where the operator shares them. */
+data class TripStop(
+    val name: String,
+    val stopId: String?,
+    val lat: Double,
+    val lon: Double,
+    val track: String?,
+    val arrival: Long?,
+    val scheduledArrival: Long?,
+    val departure: Long?,
+    val scheduledDeparture: Long?,
+    val cancelled: Boolean,
+) {
+    /** When the vehicle is here: departure, or arrival at the last stop. */
+    val time get() = departure ?: arrival ?: 0L
+    val scheduled get() = scheduledDeparture ?: scheduledArrival ?: time
+    val delayMinutes get() = ((time - scheduled) / 60_000).toInt()
+}
+
+/** Where a vehicle is along its trip, going by the times. */
+sealed interface TripPosition {
+    data object NotStarted : TripPosition
+    data class AtStop(val index: Int) : TripPosition
+    /** Left stop [after] and is [fraction] of the way to the next one. */
+    data class Between(val after: Int, val fraction: Double) : TripPosition
+    data object Finished : TripPosition
+}
+
+/** A whole bus, train or tram run, from its first stop to its last. */
+data class Trip(
+    val mode: String,
+    val line: String?,
+    val headsign: String?,
+    val agency: String?,
+    val color: String?,
+    val textColor: String?,
+    val realTime: Boolean,
+    val cancelled: Boolean,
+    val stops: List<TripStop>,
+    val points: List<LatLng>,
+) {
+    fun position(now: Long): TripPosition {
+        if (stops.isEmpty() || now < stops.first().time) return TripPosition.NotStarted
+        val i = stops.indexOfLast { (it.arrival ?: it.time) <= now }
+        if (i >= stops.lastIndex) return TripPosition.Finished
+        val leave = stops[i].time
+        if (now < leave) return TripPosition.AtStop(i)
+        val next = stops[i + 1].arrival ?: stops[i + 1].time
+        val fraction = if (next > leave) (now - leave).toDouble() / (next - leave) else 1.0
+        return TripPosition.Between(i, fraction.coerceIn(0.0, 1.0))
+    }
+
+    /** Where on the map [position] is: on the line between the stops, by distance. */
+    fun locate(position: TripPosition): LatLng? = when (position) {
+        TripPosition.NotStarted -> stops.firstOrNull()?.let { LatLng(it.lat, it.lon) }
+        TripPosition.Finished -> stops.lastOrNull()?.let { LatLng(it.lat, it.lon) }
+        is TripPosition.AtStop -> stops[position.index].let { LatLng(it.lat, it.lon) }
+        is TripPosition.Between -> {
+            val from = stopPointIndex[position.after]
+            val to = stopPointIndex[position.after + 1]
+            if (points.size < 2 || to <= from) {
+                val a = stops[position.after]
+                val b = stops[position.after + 1]
+                LatLng(a.lat + (b.lat - a.lat) * position.fraction, a.lon + (b.lon - a.lon) * position.fraction)
+            } else {
+                val target = along[from] + (along[to] - along[from]) * position.fraction
+                val k = (from + 1..to).first { along[it] >= target }
+                val t = (target - along[k - 1]) / (along[k] - along[k - 1]).coerceAtLeast(1e-6)
+                LatLng(
+                    points[k - 1].latitude + (points[k].latitude - points[k - 1].latitude) * t,
+                    points[k - 1].longitude + (points[k].longitude - points[k - 1].longitude) * t,
+                )
+            }
+        }
+    }
+
+    /** Running distance along [points], in degrees; only compared with itself. */
+    private val along by lazy {
+        DoubleArray(points.size).also { a ->
+            for (i in 1 until points.size) {
+                a[i] = a[i - 1] + hypot(
+                    points[i].latitude - points[i - 1].latitude,
+                    (points[i].longitude - points[i - 1].longitude) * cos(Math.toRadians(points[i].latitude)),
+                )
+            }
+        }
+    }
+
+    /** For each stop, the closest point of the line, searching onward from the previous stop. */
+    private val stopPointIndex by lazy {
+        var start = 0
+        stops.map { stop ->
+            val best = (start until points.size).minByOrNull {
+                hypot(points[it].latitude - stop.lat, points[it].longitude - stop.lon)
+            } ?: start
+            start = best
+            best
+        }
+    }
 }
 
 /**
@@ -101,12 +209,14 @@ object Transitous {
             val place = s.getJSONObject("place")
             val time = place.time("departure") ?: place.time("arrival") ?: 0L
             Departure(
+                tripId = s.str("tripId"),
                 mode = s.optString("mode"),
                 line = s.str("displayName") ?: s.str("routeShortName") ?: s.str("tripShortName") ?: "",
                 headsign = s.str("headsign") ?: "",
                 color = s.str("routeColor")?.let { "#$it" },
                 textColor = s.str("routeTextColor")?.let { "#$it" },
                 stopName = place.optString("name"),
+                stopId = place.str("stopId"),
                 track = place.str("track"),
                 time = time,
                 scheduled = place.time("scheduledDeparture") ?: place.time("scheduledArrival") ?: time,
@@ -114,6 +224,43 @@ object Transitous {
                 cancelled = s.optBoolean("cancelled") || s.optBoolean("tripCancelled"),
             )
         }
+    }
+
+    /** Every stop of one run of a line, with live times. */
+    suspend fun trip(tripId: String): Trip {
+        val json = JSONObject(httpGet("$BASE/trip?tripId=" + URLEncoder.encode(tripId, "UTF-8")))
+        val leg = json.getJSONArray("legs").getJSONObject(0)
+        val places = listOf(leg.getJSONObject("from")) +
+            leg.optJSONArray("intermediateStops").objects() +
+            listOf(leg.getJSONObject("to"))
+        val geometry = leg.optJSONObject("legGeometry")
+        return Trip(
+            mode = leg.optString("mode"),
+            line = leg.str("displayName") ?: leg.str("routeShortName") ?: leg.str("tripShortName"),
+            headsign = leg.str("headsign"),
+            agency = leg.str("agencyName"),
+            color = leg.str("routeColor")?.let { "#$it" },
+            textColor = leg.str("routeTextColor")?.let { "#$it" },
+            realTime = leg.optBoolean("realTime"),
+            cancelled = leg.optBoolean("cancelled"),
+            stops = places.map { p ->
+                TripStop(
+                    name = p.optString("name"),
+                    stopId = p.str("stopId"),
+                    lat = p.getDouble("lat"),
+                    lon = p.getDouble("lon"),
+                    track = p.str("track"),
+                    arrival = p.time("arrival"),
+                    scheduledArrival = p.time("scheduledArrival"),
+                    departure = p.time("departure"),
+                    scheduledDeparture = p.time("scheduledDeparture"),
+                    cancelled = p.optBoolean("cancelled"),
+                )
+            },
+            points = geometry?.let { g ->
+                decodePolyline(g.optString("points"), g.optString("precision", "7").toIntOrNull() ?: 7)
+            }.orEmpty(),
+        )
     }
 
     /** Places, addresses and stops matching [text], biased toward the given point. */
@@ -160,12 +307,14 @@ object Transitous {
             val geometry = leg.optJSONObject("legGeometry")
             TransitLeg(
                 mode = leg.optString("mode"),
+                tripId = leg.str("tripId"),
                 line = leg.str("displayName") ?: leg.str("routeShortName"),
                 headsign = leg.str("headsign"),
                 agency = leg.str("agencyName"),
                 color = leg.str("routeColor")?.let { "#$it" },
                 textColor = leg.str("routeTextColor")?.let { "#$it" },
                 fromName = from.optString("name"),
+                fromStopId = from.str("stopId"),
                 fromTrack = from.str("track"),
                 toName = to.optString("name"),
                 toTrack = to.str("track"),

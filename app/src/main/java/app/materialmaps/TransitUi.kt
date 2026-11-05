@@ -146,6 +146,7 @@ fun TransitPanel(
     error: String?,
     onRetry: () -> Unit,
     onLater: (() -> Unit)?,
+    onOpenTrip: (TransitLeg) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pickingTime by remember { mutableStateOf(false) }
@@ -184,7 +185,7 @@ fun TransitPanel(
                     Text(error ?: "No connections found.", style = MaterialTheme.typography.bodyLarge)
                     TextButton(onClick = onRetry, modifier = Modifier.padding(top = 4.dp)) { Text("Try again") }
                 }
-                itinerary != null -> ItineraryDetails(itinerary, onBack = { onSelect(null) })
+                itinerary != null -> ItineraryDetails(itinerary, onBack = { onSelect(null) }, onOpenTrip = onOpenTrip)
                 else -> LazyColumn(Modifier.heightIn(max = 380.dp)) {
                     itemsIndexed(itineraries) { i, it ->
                         if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
@@ -281,7 +282,7 @@ private fun ItineraryRow(itinerary: Itinerary, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit) {
+private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit, onOpenTrip: (TransitLeg) -> Unit) {
     Row(Modifier.padding(start = 4.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All connections") }
         Text(
@@ -299,14 +300,18 @@ private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit) {
         )
     }
     LazyColumn(Modifier.heightIn(max = 380.dp)) {
-        items(itinerary.legs) { leg -> LegRow(leg) }
+        items(itinerary.legs) { leg -> LegRow(leg, onClick = if (leg.tripId != null) ({ onOpenTrip(leg) }) else null) }
     }
 }
 
 @Composable
-private fun LegRow(leg: TransitLeg) {
+private fun LegRow(leg: TransitLeg, onClick: (() -> Unit)?) {
     val colors = MaterialTheme.colorScheme
-    Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+    Row(
+        Modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+    ) {
         Text(
             clock(leg.departure),
             style = MaterialTheme.typography.labelLarge,
@@ -439,7 +444,12 @@ fun transitKind(mode: String): TransitKind = when (mode) {
 
 /** Live departures for a stop or station, shown on its place card, with a tab per kind of transport. */
 @Composable
-fun DepartureBoard(departures: List<Departure>?, loading: Boolean, modifier: Modifier = Modifier) {
+fun DepartureBoard(
+    departures: List<Departure>?,
+    loading: Boolean,
+    onOpenTrip: (Departure) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val kinds = departures.orEmpty().map { transitKind(it.mode) }.distinct().sorted()
     var chosen by rememberSaveable { mutableStateOf<TransitKind?>(null) }
     val active = chosen?.takeIf { it in kinds } ?: kinds.firstOrNull()
@@ -484,7 +494,7 @@ fun DepartureBoard(departures: List<Departure>?, loading: Boolean, modifier: Mod
                     }
                 }
                 LazyColumn(Modifier.heightIn(max = 240.dp).padding(top = 4.dp)) {
-                    items(departures.filter { transitKind(it.mode) == active }) { d -> DepartureRow(d) }
+                    items(departures.filter { transitKind(it.mode) == active }) { d -> DepartureRow(d, onClick = { onOpenTrip(d) }) }
                 }
             }
         }
@@ -492,9 +502,14 @@ fun DepartureBoard(departures: List<Departure>?, loading: Boolean, modifier: Mod
 }
 
 @Composable
-private fun DepartureRow(d: Departure) {
+private fun DepartureRow(d: Departure, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .then(if (d.tripId != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Box(Modifier.width(88.dp)) { LineBadge(d.mode, d.line, d.color, d.textColor) }
         Column(Modifier.weight(1f)) {
             Text(

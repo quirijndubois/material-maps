@@ -157,10 +157,17 @@ private const val TRANSIT_WALK_LAYER = "transit-walks-line"
 private const val TRANSIT_RIDE_SOURCE = "transit-rides"
 private const val TRANSIT_RIDE_CASING_LAYER = "transit-rides-casing"
 private const val TRANSIT_RIDE_LAYER = "transit-rides-line"
+private const val TRIP_LINE_SOURCE = "trip-line"
+private const val TRIP_LINE_CASING_LAYER = "trip-line-casing"
+private const val TRIP_LINE_LAYER = "trip-line-line"
+private const val TRIP_STOPS_SOURCE = "trip-stops"
+private const val TRIP_STOPS_LAYER = "trip-stops-dot"
+private const val TRIP_VEHICLE_SOURCE = "trip-vehicle"
+private const val TRIP_VEHICLE_LAYER = "trip-vehicle-dot"
 
 private enum class Follow { Off, Centered, Zoomed, Compass }
 
-private enum class Panel { None, Place, Route, Navigation }
+private enum class Panel { None, Place, Route, Navigation, Trip }
 
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -229,6 +236,14 @@ fun MapScreen() {
     var mapResults by remember { mutableStateOf(emptyList<Place>()) }
 
     var departures by remember { mutableStateOf<List<Departure>?>(null) }
+
+    // A bus, train or tram run opened from departures or a journey.
+    var openTrip by remember { mutableStateOf<TripRef?>(null) }
+    var lastTrip by remember { mutableStateOf<TripRef?>(null) }
+    var trip by remember { mutableStateOf<Trip?>(null) }
+    var tripError by remember { mutableStateOf<String?>(null) }
+    var tripRequest by remember { mutableIntStateOf(0) }
+    var tripNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var departuresLoading by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -448,6 +463,11 @@ fun MapScreen() {
         }
     }
 
+    fun showTrip(ref: TripRef) {
+        openTrip = ref
+        lastTrip = ref
+    }
+
     fun startNavigation() {
         navigating = true
         progress = null
@@ -505,6 +525,9 @@ fun MapScreen() {
                 loaded.addSource(GeoJsonSource(ROUTE_SOURCE))
                 loaded.addSource(GeoJsonSource(TRANSIT_WALK_SOURCE))
                 loaded.addSource(GeoJsonSource(TRANSIT_RIDE_SOURCE))
+                loaded.addSource(GeoJsonSource(TRIP_LINE_SOURCE))
+                loaded.addSource(GeoJsonSource(TRIP_STOPS_SOURCE))
+                loaded.addSource(GeoJsonSource(TRIP_VEHICLE_SOURCE))
                 loaded.addSource(GeoJsonSource(PIN_SOURCE))
                 loaded.addSource(GeoJsonSource(RESULTS_SOURCE))
                 poiLayers = loaded.layers
@@ -524,6 +547,27 @@ fun MapScreen() {
                 add(
                     line(TRANSIT_RIDE_LAYER, TRANSIT_RIDE_SOURCE, accent, 6f)
                         .withProperties(PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))))
+                )
+                add(line(TRIP_LINE_CASING_LAYER, TRIP_LINE_SOURCE, casing, 9f))
+                add(
+                    line(TRIP_LINE_LAYER, TRIP_LINE_SOURCE, accent, 6f)
+                        .withProperties(PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))))
+                )
+                loaded.addLayer(
+                    CircleLayer(TRIP_STOPS_LAYER, TRIP_STOPS_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(4f),
+                        PropertyFactory.circleColor(android.graphics.Color.WHITE),
+                        PropertyFactory.circleStrokeWidth(2.5f),
+                        PropertyFactory.circleStrokeColor(Expression.toColor(Expression.get("color"))),
+                    )
+                )
+                loaded.addLayer(
+                    CircleLayer(TRIP_VEHICLE_LAYER, TRIP_VEHICLE_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(10f),
+                        PropertyFactory.circleColor(Expression.toColor(Expression.get("color"))),
+                        PropertyFactory.circleStrokeWidth(3f),
+                        PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    )
                 )
                 loaded.addLayer(
                     CircleLayer(RESULTS_LAYER, RESULTS_SOURCE).withProperties(
@@ -850,6 +894,81 @@ fun MapScreen() {
         )
     }
 
+    // The open trip's stops and times, refreshed for live delays while it's shown.
+    LaunchedEffect(openTrip, tripRequest) {
+        trip = null
+        tripError = null
+        val ref = openTrip ?: return@LaunchedEffect
+        var first = true
+        while (true) {
+            try {
+                val loaded = Transitous.trip(ref.tripId)
+                trip = loaded
+                tripError = null
+                if (first) {
+                    first = false
+                    val points = loaded.points.ifEmpty { loaded.stops.map { LatLng(it.lat, it.lon) } }
+                    if (points.size >= 2) {
+                        stopTracking()
+                        runCatching {
+                            map?.animateCamera(
+                                CameraUpdateFactory.newLatLngBounds(
+                                    LatLngBounds.Builder().includes(points).build(),
+                                    dp(48), topChromePx + dp(32), dp(48), bottomInsetPx + dp(440),
+                                ),
+                                700,
+                            )
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Keep showing the last times if a refresh fails.
+                if (trip == null) tripError = "Couldn't load this trip."
+            }
+            delay(30_000)
+        }
+    }
+
+    // Move the vehicle along as time passes between refreshes.
+    LaunchedEffect(openTrip) {
+        while (openTrip != null) {
+            tripNow = System.currentTimeMillis()
+            delay(10_000)
+        }
+    }
+
+    // Draw the open trip: its line, its stops and where the vehicle should be now.
+    LaunchedEffect(trip, tripNow, style) {
+        val s = style ?: return@LaunchedEffect
+        val line = s.getSourceAs<GeoJsonSource>(TRIP_LINE_SOURCE) ?: return@LaunchedEffect
+        val stops = s.getSourceAs<GeoJsonSource>(TRIP_STOPS_SOURCE) ?: return@LaunchedEffect
+        val vehicle = s.getSourceAs<GeoJsonSource>(TRIP_VEHICLE_SOURCE) ?: return@LaunchedEffect
+        val t = trip
+        val color = t?.color ?: String.format("#%06X", accent and 0xFFFFFF)
+        fun Feature.colored() = apply { addStringProperty("color", color) }
+        val points = t?.points.orEmpty().ifEmpty { t?.stops.orEmpty().map { LatLng(it.lat, it.lon) } }
+        line.setGeoJson(
+            FeatureCollection.fromFeatures(
+                listOfNotNull(
+                    points.takeIf { it.size >= 2 }?.let { pts ->
+                        Feature.fromGeometry(LineString.fromLngLats(pts.map { Point.fromLngLat(it.longitude, it.latitude) })).colored()
+                    }
+                )
+            )
+        )
+        stops.setGeoJson(
+            FeatureCollection.fromFeatures(t?.stops.orEmpty().map { Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat)).colored() })
+        )
+        val here = t?.let { it.locate(it.position(tripNow)) }
+        vehicle.setGeoJson(
+            FeatureCollection.fromFeatures(
+                listOfNotNull(here?.let { Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)).colored() })
+            )
+        )
+    }
+
     // Live departures for stops and stations, refreshed while the card is open.
     LaunchedEffect(selected) {
         departures = null
@@ -913,8 +1032,9 @@ fun MapScreen() {
         onDispose { view.keepScreenOn = false }
     }
 
-    BackHandler(enabled = !expanded && (navigating || directionsTo != null || selected != null || resultsOnMap)) {
+    BackHandler(enabled = !expanded && (openTrip != null || navigating || directionsTo != null || selected != null || resultsOnMap)) {
         when {
+            openTrip != null -> openTrip = null
             navigating -> stopNavigation()
             directionsTo != null -> exitDirections()
             selected != null -> selected = null
@@ -1010,6 +1130,7 @@ fun MapScreen() {
             }
             val panel = when {
                 directionsTo != null && navigating -> Panel.Navigation
+                openTrip != null -> Panel.Trip
                 directionsTo != null -> Panel.Route
                 selected != null -> Panel.Place
                 else -> Panel.None
@@ -1032,6 +1153,15 @@ fun MapScreen() {
                     .padding(top = 16.dp)
                     .animateContentSize()
                 when {
+                    target == Panel.Trip && (openTrip ?: lastTrip) != null -> TripPanel(
+                        ref = openTrip ?: lastTrip!!,
+                        trip = trip,
+                        now = tripNow,
+                        error = tripError,
+                        onBack = { openTrip = null },
+                        onRetry = { tripRequest++ },
+                        modifier = panelModifier,
+                    )
                     target == Panel.Navigation && destination != null -> NavigationPanel(
                         route = routes.getOrNull(routeIndex),
                         progress = progress,
@@ -1051,6 +1181,7 @@ fun MapScreen() {
                             else permissionLauncher.launch(LOCATION_PERMISSIONS)
                         },
                         onLater = if (transitNextPage != null) ::loadLaterConnections else null,
+                        onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
                         modifier = panelModifier,
                     )
                     target == Panel.Route && destination != null -> RoutePanel(
@@ -1073,7 +1204,13 @@ fun MapScreen() {
                         onClose = { selected = null },
                         modifier = panelModifier,
                         departures = if (place.departureRadius() != null) {
-                            { DepartureBoard(departures, departuresLoading, Modifier.padding(top = 16.dp, end = 12.dp)) }
+                            {
+                            DepartureBoard(
+                                departures, departuresLoading,
+                                onOpenTrip = { d -> d.tripRef()?.let(::showTrip) },
+                                modifier = Modifier.padding(top = 16.dp, end = 12.dp),
+                            )
+                        }
                         } else null,
                     )
                     else -> Spacer(Modifier.fillMaxWidth())
