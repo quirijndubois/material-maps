@@ -5,12 +5,16 @@ import org.json.JSONObject
 import org.maplibre.android.geometry.LatLng
 import java.net.URLEncoder
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.acos
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tan
 
 enum class TravelMode(val costing: String, val label: String) {
     Car("auto", "Drive"),
@@ -62,6 +66,8 @@ data class RouteProgress(
     val offRoute: Double,
     /** Compass direction of the route just ahead, in degrees. */
     val heading: Double,
+    /** The closest point on the route. */
+    val snapped: LatLng,
 ) {
     val arrived get() = remainingDistance < 25
 }
@@ -82,14 +88,13 @@ class Route(
         for (i in 1 until points.size) a[i] = a[i - 1] + metersBetween(points[i - 1], points[i])
     }
 
-    /** Where [lat]/[lon] is along this route, snapped to the closest segment. */
-    fun progress(lat: Double, lon: Double): RouteProgress {
+    /** The closest spot on segments [segments] to a point: which segment, how far along it (0..1), and meters away. */
+    private data class Nearest(val segment: Int, val t: Double, val distance: Double)
+
+    private fun nearest(lat: Double, lon: Double, segments: IntRange): Nearest {
         val cosLat = cos(Math.toRadians(lat))
-        var best = Double.MAX_VALUE
-        var bestSegment = 0
-        var bestAlong = 0.0
-        var bestT = 0.0
-        for (i in 0 until points.size - 1) {
+        var best = Nearest(segments.first.coerceAtLeast(0), 0.0, Double.MAX_VALUE)
+        for (i in segments) {
             // Flat local coordinates in meters around the current position; fine at these distances.
             val ax = (points[i].longitude - lon) * cosLat * METERS_PER_DEGREE
             val ay = (points[i].latitude - lat) * METERS_PER_DEGREE
@@ -98,13 +103,15 @@ class Route(
             val lengthSquared = dx * dx + dy * dy
             val t = if (lengthSquared == 0.0) 0.0 else ((-ax * dx - ay * dy) / lengthSquared).coerceIn(0.0, 1.0)
             val d = hypot(ax + t * dx, ay + t * dy)
-            if (d < best) {
-                best = d
-                bestSegment = i
-                bestT = t
-                bestAlong = along[i] + t * (along[i + 1] - along[i])
-            }
+            if (d < best.distance) best = Nearest(i, t, d)
         }
+        return best
+    }
+
+    /** Where [lat]/[lon] is along this route, snapped to the closest segment. */
+    fun progress(lat: Double, lon: Double): RouteProgress {
+        val (bestSegment, bestT, best) = nearest(lat, lon, 0 until points.size - 1)
+        val bestAlong = alongAt(bestSegment, bestT)
         val total = along.lastOrNull() ?: 0.0
         val next = maneuvers.firstOrNull { it.beginIndex > bestSegment } ?: maneuvers.lastOrNull()
         val nextAt = next?.let { along[it.beginIndex.coerceIn(0, points.lastIndex)] } ?: total
@@ -117,24 +124,65 @@ class Route(
             remainingDistance = remaining,
             remainingTime = if (total > 0) duration * remaining / total else 0.0,
             offRoute = best,
-            heading = headingAt(bestSegment, bestT, bestAlong),
+            heading = directionAt(bestAlong),
+            snapped = points.getOrNull(bestSegment + 1)?.let { points[bestSegment].interpolate(it, bestT) }
+                ?: points.firstOrNull() ?: LatLng(lat, lon),
         )
     }
 
+    private fun alongAt(segment: Int, t: Double) =
+        if (points.size < 2) 0.0 else along[segment] + t * (along[segment + 1] - along[segment])
+
     /**
-     * Where the route goes from a point on it: towards the spot [HEADING_LOOKAHEAD] meters further
-     * on, so the direction turns smoothly into a corner instead of snapping round at it.
+     * Meters along the route and meters off it for [lat]/[lon], looking only at the stretch
+     * between [from] and [to] meters along. Following a car with this, a fix next to a corner
+     * can't be taken for the street it's about to turn into, or for a road it already passed.
      */
-    private fun headingAt(segment: Int, t: Double, at: Double): Double {
+    fun locate(lat: Double, lon: Double, from: Double, to: Double): Pair<Double, Double> {
+        if (points.size < 2) return 0.0 to Double.MAX_VALUE
+        val first = (segmentAt(from) - 1).coerceAtLeast(0)
+        val last = (segmentAt(to) + 1).coerceAtMost(points.size - 2)
+        val n = nearest(lat, lon, first..last)
+        return alongAt(n.segment, n.t) to n.distance
+    }
+
+    val length get() = along.lastOrNull() ?: 0.0
+
+    /** This route as a car drives it, with its corners rounded into arcs; for the arrow to follow. */
+    val drivingLine: Route by lazy { Route(roundCorners(points, CORNER_RADIUS), distance, duration, emptyList()) }
+
+    /** The segment [meters] along the route falls in. */
+    private fun segmentAt(meters: Double): Int {
+        val i = along.binarySearch(meters.coerceIn(0.0, length))
+        return (if (i >= 0) i else -i - 2).coerceIn(0, (points.size - 2).coerceAtLeast(0))
+    }
+
+    /** The spot [meters] along the route. */
+    fun pointAt(meters: Double): LatLng {
+        if (points.size < 2) return points.firstOrNull() ?: LatLng(0.0, 0.0)
+        val i = segmentAt(meters)
+        val t = ((meters - along[i]) / (along[i + 1] - along[i]).coerceAtLeast(1e-6)).coerceIn(0.0, 1.0)
+        return points[i].interpolate(points[i + 1], t)
+    }
+
+    /**
+     * Which way the road goes [meters] along the route, over [HEADING_SPAN] meters either side:
+     * a corner turns the arrow within those few meters, while driving through it.
+     */
+    fun directionAt(meters: Double, span: Double = HEADING_SPAN): Double {
         if (points.size < 2) return 0.0
-        val from = points[segment].interpolate(points[segment + 1], t)
-        val target = at + HEADING_LOOKAHEAD
-        val i = (segment + 1 until points.size).firstOrNull { along[it] >= target }
-        val to = if (i == null) points.last()
-        else points[i - 1].interpolate(points[i], (target - along[i - 1]) / (along[i] - along[i - 1]).coerceAtLeast(1e-6))
-        // Close to the end, look back along the last stretch instead.
-        return if (metersBetween(from, to) > 1) bearingBetween(from, to)
-        else bearingBetween(points[points.size - 2], points.last())
+        val from = (meters - span).coerceIn(0.0, length)
+        val to = (meters + span).coerceIn(0.0, length)
+        if (to - from < 1) return bearingBetween(points[points.size - 2], points.last())
+        return bearingBetween(pointAt(from), pointAt(to))
+    }
+
+    /** The part of the route from [meters] along it to the end. */
+    fun remainingFrom(meters: Double): List<LatLng> {
+        if (points.size < 2 || meters <= 0) return points
+        val i = (1 until points.size).firstOrNull { along[it] > meters } ?: return listOf(points.last())
+        val t = (meters - along[i - 1]) / (along[i] - along[i - 1]).coerceAtLeast(1e-6)
+        return listOf(points[i - 1].interpolate(points[i], t)) + points.subList(i, points.size)
     }
 }
 
@@ -339,7 +387,63 @@ fun formatDuration(seconds: Double): String {
     }
 }
 
-private const val HEADING_LOOKAHEAD = 25.0
+private const val HEADING_SPAN = 4.0
+/** Meters; about how tight a car takes a corner in town. */
+private const val CORNER_RADIUS = 10.0
+
+/**
+ * [points] with every corner replaced by an arc of [radius] meters (smaller where the
+ * segments are too short for it), sampled about every meter: the line a car actually drives.
+ */
+private fun roundCorners(points: List<LatLng>, radius: Double): List<LatLng> {
+    if (points.size < 3) return points
+    val result = mutableListOf(points.first())
+    for (i in 1 until points.lastIndex) {
+        val b = points[i]
+        val cosLat = cos(Math.toRadians(b.latitude))
+        // Flat meters around the corner.
+        fun toXY(p: LatLng) = doubleArrayOf((p.longitude - b.longitude) * cosLat * METERS_PER_DEGREE, (p.latitude - b.latitude) * METERS_PER_DEGREE)
+        fun toLatLng(x: Double, y: Double) = LatLng(b.latitude + y / METERS_PER_DEGREE, b.longitude + x / (cosLat * METERS_PER_DEGREE))
+        val a = toXY(points[i - 1])
+        val c = toXY(points[i + 1])
+        val lengthA = hypot(a[0], a[1])
+        val lengthC = hypot(c[0], c[1])
+        if (lengthA < 0.1 || lengthC < 0.1) {
+            result += b
+            continue
+        }
+        val ux = a[0] / lengthA
+        val uy = a[1] / lengthA
+        val wx = c[0] / lengthC
+        val wy = c[1] / lengthC
+        // How far the road turns here; nearly straight, or nearly turning back, stays as it is.
+        val turn = Math.PI - acos((ux * wx + uy * wy).coerceIn(-1.0, 1.0))
+        if (turn < Math.toRadians(2.0) || turn > Math.toRadians(170.0)) {
+            result += b
+            continue
+        }
+        val tanHalf = tan(turn / 2)
+        // Where the arc meets each segment; at most a bit under half of it, so arcs don't overlap.
+        val reach = minOf(radius * tanHalf, 0.45 * lengthA, 0.45 * lengthC)
+        val r = reach / tanHalf
+        val bx = ux + wx
+        val by = uy + wy
+        val bLength = hypot(bx, by)
+        val toCenter = r / cos(turn / 2)
+        val ox = bx / bLength * toCenter
+        val oy = by / bLength * toCenter
+        val start = atan2(uy * reach - oy, ux * reach - ox)
+        val end = atan2(wy * reach - oy, wx * reach - ox)
+        val sweep = ((end - start + 3 * Math.PI) % (2 * Math.PI)) - Math.PI
+        val steps = ceil(abs(sweep) * r).toInt().coerceAtLeast(2)
+        for (k in 0..steps) {
+            val angle = start + sweep * k / steps
+            result += toLatLng(ox + r * cos(angle), oy + r * sin(angle))
+        }
+    }
+    result += points.last()
+    return result
+}
 
 private fun LatLng.interpolate(other: LatLng, t: Double) =
     LatLng(latitude + (other.latitude - latitude) * t, longitude + (other.longitude - longitude) * t)

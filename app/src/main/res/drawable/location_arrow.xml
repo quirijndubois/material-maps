@@ -1,7 +1,7 @@
 <!-- The user's position while navigating: an arrow pointing where they're heading. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="40dp"
-    android:height="40dp"
+    android:width="72dp"
+    android:height="72dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path

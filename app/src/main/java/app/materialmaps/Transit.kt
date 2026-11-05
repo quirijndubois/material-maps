@@ -264,14 +264,23 @@ object Transitous {
     }
 
     /** Places, addresses and stops matching [text], biased toward the given point. */
-    suspend fun geocode(text: String, nearLat: Double?, nearLon: Double?, bias: Int = 5, count: Int = 12): List<Place> {
+    suspend fun geocode(text: String, nearLat: Double?, nearLon: Double?, bias: Int = 5, count: Int = 12): List<SearchHit> {
         val url = buildString {
             append("$BASE/geocode?text=").append(URLEncoder.encode(text, "UTF-8"))
             if (nearLat != null && nearLon != null) append("&place=$nearLat,$nearLon&placeBias=$bias")
             append("&numResults=$count")
         }
-        return JSONArray(httpGet(url)).objects().take(count).mapNotNull(::parseMatch)
+        return JSONArray(httpGet(url)).objects().take(count).mapIndexedNotNull { i, m ->
+            parseMatch(m)?.let { SearchHit(it, matchContext(m), i) }
+        }
     }
+
+    /** Street, postcode and every area a match lies in, for ranking; "station" for stations. */
+    private fun matchContext(m: JSONObject): String = (
+        listOfNotNull(m.str("street"), m.str("houseNumber"), m.str("zip")) +
+            m.optJSONArray("areas").objects().mapNotNull { it.str("name") } +
+            listOfNotNull("station".takeIf { m.modes().any { transitKind(it) in setOf(TransitKind.Train, TransitKind.Metro) } })
+        ).joinToString(" ")
 
     suspend fun reverseGeocode(lat: Double, lon: Double): Place? =
         JSONArray(httpGet("$BASE/reverse-geocode?place=$lat,$lon")).objects().firstNotNullOfOrNull(::parseMatch)

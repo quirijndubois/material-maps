@@ -61,7 +61,7 @@ fun PlacePicker(
         delay(250)
         searching = true
         try {
-            results = Geocoder.search(q, near?.latitude, near?.longitude, null)
+            results = Geocoder.search(q, near?.latitude, near?.longitude, null, early = { results = it })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

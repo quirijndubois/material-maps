@@ -57,6 +57,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -69,8 +70,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import java.util.Calendar
 import java.util.Date
+import kotlinx.coroutines.delay
 
 /**
  * The most a list in a panel may take up, so panels fit the screen: lists keep their own
@@ -123,10 +128,35 @@ fun LineBadge(mode: String, line: String?, color: String?, textColor: String?) {
 @Composable
 fun clock(millis: Long): String = DateFormat.getTimeFormat(LocalContext.current).format(Date(millis))
 
+/**
+ * The current time in millis, moving on while it's shown and catching up as soon as the app
+ * comes back to the front, so countdowns don't freeze at whatever they said when loaded.
+ */
+@Composable
+fun rememberNow(step: Long = 10_000): Long {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val now by produceState(System.currentTimeMillis(), lifecycle, step) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                value = System.currentTimeMillis()
+                delay(step)
+            }
+        }
+    }
+    return now
+}
+
+/** Leaves out what has left by now; the list is only fetched now and then. */
+@Composable
+private fun List<Departure>?.upcoming(): List<Departure>? {
+    val now = rememberNow()
+    return this?.filter { it.time > now - 60_000 }
+}
+
 /** "now", "in 4 min" or a clock time for later. */
 @Composable
 private fun untilText(millis: Long): String {
-    val minutes = ((millis - System.currentTimeMillis()) / 60_000).toInt()
+    val minutes = ((millis - rememberNow()) / 60_000).toInt()
     return when {
         minutes <= 0 -> "now"
         minutes < 60 -> "in $minutes min"
@@ -457,11 +487,12 @@ fun transitKind(mode: String): TransitKind = when (mode) {
 /** Live departures for a stop or station, shown on its place card, with a tab per kind of transport. */
 @Composable
 fun DepartureBoard(
-    departures: List<Departure>?,
+    allDepartures: List<Departure>?,
     loading: Boolean,
     onOpenTrip: (Departure) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val departures = allDepartures.upcoming()
     val kinds = departures.orEmpty().map { transitKind(it.mode) }.distinct().sorted()
     var chosen by rememberSaveable { mutableStateOf<TransitKind?>(null) }
     val active = chosen?.takeIf { it in kinds } ?: kinds.firstOrNull()
@@ -554,7 +585,8 @@ private fun DepartureRow(d: Departure, onClick: () -> Unit) {
 
 /** The next few departures from a saved stop, for the search panel. */
 @Composable
-fun SavedStopDepartures(stop: Place, departures: List<Departure>?, onOpenTrip: (Departure) -> Unit) {
+fun SavedStopDepartures(stop: Place, allDepartures: List<Departure>?, onOpenTrip: (Departure) -> Unit) {
+    val departures = allDepartures.upcoming()
     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
         Text(stop.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         when {

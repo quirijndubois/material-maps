@@ -123,6 +123,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -190,8 +193,14 @@ private const val MEASURE_LINE_LAYER = "measure-line-line"
 private const val MEASURE_POINTS_SOURCE = "measure-points"
 private const val MEASURE_POINTS_LAYER = "measure-points-dot"
 private const val ROUTE_SOURCE = "route"
+/** How often the arrow gets its next stretch of road while navigating. */
+private const val ARROW_UPDATE_MILLIS = 200L
 private const val ROUTE_CASING_LAYER = "route-casing"
 private const val ROUTE_LAYER = "route-line"
+/** While navigating: the bit of route from the arrow to the next point of the line. */
+private const val ROUTE_HEAD_SOURCE = "route-head"
+private const val ROUTE_HEAD_CASING_LAYER = "route-head-casing"
+private const val ROUTE_HEAD_LAYER = "route-head-line"
 private const val ALT_ROUTE_SOURCE = "route-alternatives"
 private const val ALT_ROUTE_LAYER = "route-alternatives-line"
 private const val SAVED_SOURCE = "saved-places"
@@ -242,6 +251,7 @@ fun MapScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
@@ -334,6 +344,7 @@ fun MapScreen(
     var routeRequest by remember { mutableIntStateOf(0) }
     var navigating by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<RouteProgress?>(null) }
+    val routeAhead = remember { RouteAhead() }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
     var speedLimits by remember { mutableStateOf<SpeedLimits?>(null) }
     // While navigating: the latest fix, kept coming in the background too (see NavigationService).
@@ -700,7 +711,9 @@ fun MapScreen(
         stopTracking()
         overview = true
         val here = myLocation()?.let { LatLng(it.latitude, it.longitude) }
-        val bounds = LatLngBounds.Builder().includes(route.points + listOfNotNull(here)).build()
+        // What's already behind doesn't need to fit.
+        val ahead = progress?.let { route.remainingFrom(it.traveled) } ?: route.points
+        val bounds = LatLngBounds.Builder().includes(ahead + listOfNotNull(here)).build()
         val padding = framePadding(200)
         runCatching { m.getCameraForLatLngBounds(bounds, padding, 0.0, 0.0) }.getOrNull()?.let {
             m.animateCamera(CameraUpdateFactory.newCameraPosition(it), 700)
@@ -796,15 +809,26 @@ fun MapScreen(
                     anchor.let { if (it != null) loaded.addLayerAbove(layer, it) else loaded.addLayer(layer) }
                     anchor = layer.id
                 }
-                fun line(id: String, source: String, color: Int, width: Float) =
+                // Lines widen as the map zooms in, so the route still looks like a road when
+                // driving close up instead of a hairline; [border] is added at every zoom.
+                fun line(id: String, source: String, color: Int, width: Float, border: Float = 0f) =
                     LineLayer(id, source).withProperties(
                         PropertyFactory.lineColor(color),
-                        PropertyFactory.lineWidth(width),
+                        PropertyFactory.lineWidth(
+                            Expression.interpolate(
+                                Expression.exponential(1.5f), Expression.zoom(),
+                                Expression.stop(10, width * 0.6f + border),
+                                Expression.stop(14, width + border),
+                                Expression.stop(17, width * 2.5f + border),
+                                Expression.stop(20, width * 6f + border),
+                            )
+                        ),
                         PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                         PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                     )
                 loaded.addSource(GeoJsonSource(ALT_ROUTE_SOURCE))
                 loaded.addSource(GeoJsonSource(ROUTE_SOURCE))
+                loaded.addSource(GeoJsonSource(ROUTE_HEAD_SOURCE))
                 loaded.addSource(GeoJsonSource(TRANSIT_WALK_SOURCE))
                 loaded.addSource(GeoJsonSource(TRANSIT_RIDE_SOURCE))
                 loaded.addSource(GeoJsonSource(TRIP_LINE_SOURCE))
@@ -821,19 +845,21 @@ fun MapScreen(
                     .toTypedArray()
                 val casing = ColorUtils.blendARGB(accent, android.graphics.Color.BLACK, 0.35f)
                 add(line(ALT_ROUTE_LAYER, ALT_ROUTE_SOURCE, colors.outline.toArgb(), 6f))
-                add(line(ROUTE_CASING_LAYER, ROUTE_SOURCE, casing, 10f))
+                add(line(ROUTE_CASING_LAYER, ROUTE_SOURCE, casing, 6f, border = 4f))
+                add(line(ROUTE_HEAD_CASING_LAYER, ROUTE_HEAD_SOURCE, casing, 6f, border = 4f))
                 add(line(ROUTE_LAYER, ROUTE_SOURCE, accent, 6f))
+                add(line(ROUTE_HEAD_LAYER, ROUTE_HEAD_SOURCE, accent, 6f))
                 // Walks as dots, rides in the line's own color.
                 add(
                     line(TRANSIT_WALK_LAYER, TRANSIT_WALK_SOURCE, colors.onSurfaceVariant.toArgb(), 5f)
                         .withProperties(PropertyFactory.lineDasharray(arrayOf(0f, 1.8f)))
                 )
-                add(line(TRANSIT_RIDE_CASING_LAYER, TRANSIT_RIDE_SOURCE, casing, 9f))
+                add(line(TRANSIT_RIDE_CASING_LAYER, TRANSIT_RIDE_SOURCE, casing, 6f, border = 3f))
                 add(
                     line(TRANSIT_RIDE_LAYER, TRANSIT_RIDE_SOURCE, accent, 6f)
                         .withProperties(PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))))
                 )
-                add(line(TRIP_LINE_CASING_LAYER, TRIP_LINE_SOURCE, casing, 9f))
+                add(line(TRIP_LINE_CASING_LAYER, TRIP_LINE_SOURCE, casing, 6f, border = 3f))
                 add(
                     line(TRIP_LINE_LAYER, TRIP_LINE_SOURCE, accent, 6f)
                         .withProperties(PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))))
@@ -924,6 +950,14 @@ fun MapScreen(
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) overview = false
             }
             m.addOnCameraMoveListener {
+                // Following, the camera sits on the arrow as it glides, so the route can be cut
+                // right where the arrow is on every frame.
+                if (navigating && locationComponent()?.cameraMode == CameraMode.TRACKING_GPS) {
+                    val route = routes.getOrNull(routeIndex)
+                    val s = style
+                    val target = m.cameraPosition.target
+                    if (route != null && s != null && target != null) routeAhead.draw(s, route, target)
+                }
                 bearing = m.cameraPosition.bearing.toFloat()
                 tilt = m.cameraPosition.tilt.toFloat()
                 if (measure != null) aim = m.projection.fromScreenLocation(crosshair())
@@ -1092,7 +1126,8 @@ fun MapScreen(
     }
 
     // Search while typing. Requests aren't cancelled when the next key comes in (Photon
-    // often takes a second to answer); the newest answer to arrive wins instead.
+    // often takes a second to answer); the newest answer to arrive wins instead. Each search
+    // shows its quick first answer, then the full one.
     LaunchedEffect(Unit) {
         var sent = 0L
         var shown = 0L
@@ -1116,7 +1151,16 @@ fun MapScreen(
                 searching = true
                 launch {
                     val outcome = try {
-                        Result.success(Geocoder.search(q, lat, lon, center?.zoom))
+                        Result.success(
+                            Geocoder.search(q, lat, lon, center?.zoom, early = { first ->
+                                if (id >= shown) {
+                                    shown = id
+                                    results = first
+                                    resultsFor = q
+                                    searchFailed = false
+                                }
+                            })
+                        )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -1194,14 +1238,18 @@ fun MapScreen(
         }
     }
 
-    // Draw the routes and, unless navigating, fit them on screen.
-    LaunchedEffect(routes, routeIndex, style) {
+    // Draw the routes and, unless navigating, fit them on screen. While navigating, the route
+    // being driven is drawn as the user goes, without the part behind them (see below).
+    LaunchedEffect(routes, routeIndex, style, navigating) {
         val s = style ?: return@LaunchedEffect
         val main = s.getSourceAs<GeoJsonSource>(ROUTE_SOURCE) ?: return@LaunchedEffect
         val alternatives = s.getSourceAs<GeoJsonSource>(ALT_ROUTE_SOURCE) ?: return@LaunchedEffect
         fun Route.line() = LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })
         val route = routes.getOrNull(routeIndex)
-        main.setGeoJson(FeatureCollection.fromFeatures(listOfNotNull(route?.let { Feature.fromGeometry(it.line()) })))
+        if (!navigating) {
+            routeAhead.clear(s)
+            main.setGeoJson(FeatureCollection.fromFeatures(listOfNotNull(route?.let { Feature.fromGeometry(it.line()) })))
+        }
         alternatives.setGeoJson(
             FeatureCollection.fromFeatures(
                 routes.mapIndexedNotNull { i, r ->
@@ -1248,40 +1296,45 @@ fun MapScreen(
         )
     }
 
-    // The open trip's stops and times, refreshed for live delays while it's shown.
+    // The open trip's stops and times, refreshed for live delays while it's shown, and right
+    // away when the app comes back to the front.
     LaunchedEffect(openTrip, tripRequest) {
         trip = null
         tripError = null
         val ref = openTrip ?: return@LaunchedEffect
         var first = true
-        while (true) {
-            try {
-                val loaded = Transitous.trip(ref.tripId)
-                trip = loaded
-                tripError = null
-                if (first) {
-                    first = false
-                    val points = loaded.points.ifEmpty { loaded.stops.map { LatLng(it.lat, it.lon) } }
-                    if (points.size >= 2) {
-                        stopTracking()
-                        frame(points, 440)
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    val loaded = Transitous.trip(ref.tripId)
+                    trip = loaded
+                    tripError = null
+                    if (first) {
+                        first = false
+                        val points = loaded.points.ifEmpty { loaded.stops.map { LatLng(it.lat, it.lon) } }
+                        if (points.size >= 2) {
+                            stopTracking()
+                            frame(points, 440)
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Keep showing the last times if a refresh fails.
+                    if (trip == null) tripError = "Couldn't load this trip."
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Keep showing the last times if a refresh fails.
-                if (trip == null) tripError = "Couldn't load this trip."
+                delay(30_000)
             }
-            delay(30_000)
         }
     }
 
     // Move the vehicle along as time passes between refreshes.
     LaunchedEffect(openTrip) {
-        while (openTrip != null) {
-            tripNow = System.currentTimeMillis()
-            delay(10_000)
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (openTrip != null) {
+                tripNow = System.currentTimeMillis()
+                delay(10_000)
+            }
         }
     }
 
@@ -1341,13 +1394,15 @@ fun MapScreen(
     val savedStops by remember { derivedStateOf { lists.flatMap { it.places }.filter { it.departureRadius() != null }.distinctBy { it.name } } }
     LaunchedEffect(expanded, savedStops) {
         if (!expanded || savedStops.isEmpty()) return@LaunchedEffect
-        while (true) {
-            savedStops.take(4).forEach { stop ->
-                val radius = stop.departureRadius() ?: return@forEach
-                val found = runCatching { Transitous.departures(stop.lat, stop.lon, radius, count = 6) }.getOrNull()
-                savedStopDepartures = savedStopDepartures + (stop to (found ?: savedStopDepartures[stop] ?: emptyList()))
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                savedStops.take(4).forEach { stop ->
+                    val radius = stop.departureRadius() ?: return@forEach
+                    val found = runCatching { Transitous.departures(stop.lat, stop.lon, radius, count = 6) }.getOrNull()
+                    savedStopDepartures = savedStopDepartures + (stop to (found ?: savedStopDepartures[stop] ?: emptyList()))
+                }
+                delay(30_000)
             }
-            delay(30_000)
         }
     }
 
@@ -1378,23 +1433,26 @@ fun MapScreen(
         }
     }
 
-    // Live departures for stops and stations, refreshed while the card is open.
+    // Live departures for stops and stations, refreshed while the card is open, and right away
+    // when the app comes back to the front (polling stops while it's in the background).
     LaunchedEffect(selected) {
         departures = null
         val place = selected ?: return@LaunchedEffect
         val radius = place.departureRadius() ?: return@LaunchedEffect
-        while (true) {
-            departuresLoading = true
-            try {
-                departures = Transitous.departures(place.lat, place.lon, radius)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Keep showing the last list if a refresh fails.
-            } finally {
-                departuresLoading = false
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                departuresLoading = true
+                try {
+                    departures = Transitous.departures(place.lat, place.lon, radius)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Keep showing the last list if a refresh fails.
+                } finally {
+                    departuresLoading = false
+                }
+                delay(30_000)
             }
-            delay(30_000)
         }
     }
 
@@ -1431,6 +1489,11 @@ fun MapScreen(
                 }
                 // Smoothed, so one odd GPS reading doesn't make the map jump.
                 if (here.hasSpeed()) speed += (here.speed - speed) * 0.3f
+                // Only show the road ahead. While following, the camera listener does this every
+                // frame; otherwise the latest fix will do.
+                if (locationComponent()?.cameraMode != CameraMode.TRACKING_GPS) {
+                    style?.let { routeAhead.draw(it, route, p.snapped) }
+                }
                 val component = locationComponent()
                 if (follow != Follow.Off && component?.cameraMode == CameraMode.TRACKING_GPS) {
                     val zoom = drivingZoom(speed, p)
@@ -1452,12 +1515,18 @@ fun MapScreen(
 
     // Run the foreground service while navigating, and take location updates of our own: the
     // map's location component stops listening when the app goes to the background.
+    // The map's arrow is fed from here while navigating: on the route it's moved every frame
+    // (see RouteHeadingEngine), off it each fix is passed on.
     DisposableEffect(navigating) {
         if (!navigating) return@DisposableEffect onDispose {}
         NavigationService.start(context, "Navigating", directionsTo?.name)
+        val component = locationComponent()
+        component?.locationEngine = null
         val callback = object : LocationEngineCallback<LocationEngineResult> {
             override fun onSuccess(result: LocationEngineResult) {
-                result.lastLocation?.let { navLocation = it }
+                val location = result.lastLocation ?: return
+                navLocation = location
+                if (!headingEngine.following) locationComponent()?.forceLocationUpdate(location)
             }
             override fun onFailure(exception: Exception) {}
         }
@@ -1470,8 +1539,18 @@ fun MapScreen(
         listen()
         onDispose {
             headingEngine.removeLocationUpdates(callback)
+            component?.takeIf { it.isLocationComponentActivated }?.locationEngine = headingEngine
             navLocation = null
             NavigationService.stop(context)
+        }
+    }
+
+    LaunchedEffect(navigating) {
+        if (!navigating) return@LaunchedEffect
+        while (true) {
+            // Each batch is timed to run out just as the next one comes.
+            headingEngine.ahead(ARROW_UPDATE_MILLIS)?.let { locationComponent()?.forceLocationUpdate(it, true) }
+            delay(ARROW_UPDATE_MILLIS)
         }
     }
 
@@ -2474,4 +2553,38 @@ private fun drivingZoom(speed: Float, progress: RouteProgress): Double {
     val turnSoon = progress.next != null && !progress.arrived &&
         progress.distanceToNext < maxOf(200.0, speed * 10.0)
     return if (turnSoon) maxOf(bySpeed, 16.5) else bySpeed
+}
+
+/**
+ * Draws only the part of the route still ahead while navigating. The stretch from the arrow to
+ * the next point of the line is its own tiny source, cheap enough to redraw on every frame as
+ * the arrow glides; the rest is only redrawn when the arrow passes a point of the line.
+ */
+private class RouteAhead {
+    private var route: Route? = null
+    private var segment = -1
+
+    fun draw(style: Style, route: Route, at: LatLng) {
+        if (route.points.size < 2) return
+        val p = route.progress(at.latitude, at.longitude)
+        val next = p.segment + 1
+        fun point(l: LatLng) = Point.fromLngLat(l.longitude, l.latitude)
+        if (route !== this.route || p.segment != segment) {
+            this.route = route
+            segment = p.segment
+            val rest = route.points.subList(next, route.points.size).map(::point)
+            style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(
+                FeatureCollection.fromFeatures(if (rest.size < 2) emptyList() else listOf(Feature.fromGeometry(LineString.fromLngLats(rest))))
+            )
+        }
+        style.getSourceAs<GeoJsonSource>(ROUTE_HEAD_SOURCE)?.setGeoJson(
+            Feature.fromGeometry(LineString.fromLngLats(listOf(point(p.snapped), point(route.points[next]))))
+        )
+    }
+
+    fun clear(style: Style) {
+        route = null
+        segment = -1
+        style.getSourceAs<GeoJsonSource>(ROUTE_HEAD_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(emptyList<Feature>()))
+    }
 }
