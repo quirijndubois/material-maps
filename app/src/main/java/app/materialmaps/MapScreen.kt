@@ -262,6 +262,47 @@ fun MapScreen() {
         locationComponent()?.cameraMode = CameraMode.NONE
     }
 
+    /**
+     * Flies to the user and then follows them in [mode]. Flying first matters: MapLibre drops
+     * zoom, tilt and padding changes made while it moves the camera into tracking mode, and
+     * fitting a route or trip on screen leaves padding behind for the panel, which would keep
+     * the user off center. Here the padding is always reset, to [topPadding] at most.
+     */
+    fun flyThenTrack(
+        mode: Int,
+        followAs: Follow,
+        zoom: Double? = null,
+        tilt: Double? = null,
+        bearing: Double? = null,
+        topPadding: Double = 0.0,
+    ) {
+        val component = locationComponent() ?: return
+        val m = map
+        val here = component.lastKnownLocation
+        if (m == null || here == null) {
+            component.cameraMode = mode
+            follow = followAs
+            return
+        }
+        val current = m.cameraPosition
+        val target = CameraPosition.Builder()
+            .target(LatLng(here.latitude, here.longitude))
+            .zoom(zoom ?: current.zoom)
+            .tilt(tilt ?: current.tilt)
+            .bearing(bearing ?: current.bearing)
+            .padding(0.0, topPadding, 0.0, 0.0)
+            .build()
+        follow = followAs
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(target), 700, object : MapLibreMap.CancelableCallback {
+            override fun onFinish() {
+                if (follow == followAs) component.cameraMode = mode
+            }
+            override fun onCancel() {
+                follow = Follow.Off
+            }
+        })
+    }
+
     /** Centers on the user and follows them: at street zoom, or turning with the route while navigating. */
     fun followMe() {
         val component = locationComponent()
@@ -270,36 +311,14 @@ fun MapScreen() {
             return
         }
         overview = false
-        val here = component.lastKnownLocation
-        val m = map
-        if (navigating && here != null && m != null) {
-            // The driving view: heading up, tilted, with the user low on screen to see the road
-            // ahead. Fly there first, then follow: MapLibre drops zoom, tilt and padding changes
-            // made while it's still moving the camera into tracking mode.
-            val driving = CameraPosition.Builder()
-                .target(LatLng(here.latitude, here.longitude))
-                .zoom(17.0)
-                .tilt(50.0)
-                .bearing(if (here.hasBearing()) here.bearing.toDouble() else m.cameraPosition.bearing)
-                .padding(0.0, mapView.height * 0.4, 0.0, 0.0)
-                .build()
-            follow = Follow.Zoomed
-            m.animateCamera(CameraUpdateFactory.newCameraPosition(driving), 800, object : MapLibreMap.CancelableCallback {
-                override fun onFinish() {
-                    if (navigating) component.cameraMode = CameraMode.TRACKING_GPS
-                }
-                override fun onCancel() {
-                    follow = Follow.Off
-                }
-            })
-            return
-        } else if (navigating) {
-            component.cameraMode = CameraMode.TRACKING_GPS
+        if (navigating) {
+            // The driving view: heading up, tilted, with the user low on screen to see the road ahead.
+            val here = component.lastKnownLocation
+            val bearing = here?.takeIf { it.hasBearing() }?.bearing?.toDouble()
+            flyThenTrack(CameraMode.TRACKING_GPS, Follow.Zoomed, zoom = 17.0, tilt = 50.0, bearing = bearing, topPadding = mapView.height * 0.4)
         } else {
-            component.cameraMode = CameraMode.TRACKING
-            component.zoomWhileTracking(15.0)
+            flyThenTrack(CameraMode.TRACKING, Follow.Zoomed, zoom = 15.0)
         }
-        follow = Follow.Zoomed
     }
 
     /** The location button: center, then zoom in, then turn the map with the phone. */
@@ -310,10 +329,7 @@ fun MapScreen() {
             return
         }
         when (follow) {
-            Follow.Off -> {
-                component.cameraMode = CameraMode.TRACKING
-                follow = Follow.Centered
-            }
+            Follow.Off -> flyThenTrack(CameraMode.TRACKING, Follow.Centered)
             Follow.Centered -> {
                 component.zoomWhileTracking(16.0)
                 follow = Follow.Zoomed
