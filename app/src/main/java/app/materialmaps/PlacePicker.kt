@@ -1,6 +1,7 @@
 package app.materialmaps
 
 import android.location.Location
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,9 +15,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -47,6 +50,8 @@ fun PlacePicker(
     suggestions: List<Place>,
     onPick: (Place) -> Unit,
     onDismiss: () -> Unit,
+    /** When set, "Your location" is offered first. */
+    onPickMyLocation: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf(emptyList<Place>()) }
@@ -93,6 +98,13 @@ fun PlacePicker(
                 if (searching) LinearProgressIndicator(Modifier.fillMaxWidth()) else Spacer(Modifier.height(4.dp))
                 val shown = if (query.isBlank()) suggestions else results
                 LazyColumn {
+                    if (onPickMyLocation != null && query.isBlank()) item {
+                        ListItem(
+                            headlineContent = { Text("Your location") },
+                            leadingContent = { Icon(Icons.Filled.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable(onClick = onPickMyLocation),
+                        )
+                    }
                     items(shown) { place -> PlaceRow(place, near, onClick = { onPick(place) }) }
                 }
             }

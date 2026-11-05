@@ -233,7 +233,10 @@ private const val FOLLOW_ZOOM = 16.0
 private enum class Panel { None, Place, List, Route, Navigation, Trip, Measure }
 
 /** What the place picker is choosing a place for. */
-private enum class PickFor { Stop, Home, Work }
+private enum class PickFor { Stop, Home, Work, Origin, Destination }
+
+/** Marks a [Place] that stands for where the user was, as a destination after swapping. */
+private const val MY_LOCATION_KEY = "my-location"
 
 private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -333,6 +336,8 @@ fun MapScreen(
     }
 
     var directionsTo by remember { mutableStateOf<Place?>(null) }
+    // Where directions start; null for the user's location.
+    var directionsFrom by remember { mutableStateOf<Place?>(null) }
     // Places to pass on the way, in order.
     var stops by remember { mutableStateOf(emptyList<Place>()) }
     var lastDestination by remember { mutableStateOf<Place?>(null) }
@@ -658,6 +663,7 @@ fun MapScreen(
     }
 
     fun startDirections(place: Place) {
+        directionsFrom = null
         stops = emptyList()
         passedStops = emptySet()
         directionsTo = place
@@ -723,6 +729,7 @@ fun MapScreen(
     fun exitDirections() {
         if (navigating) stopNavigation()
         directionsTo = null
+        directionsFrom = null
         routes = emptyList()
         itineraries = emptyList()
         itineraryIndex = null
@@ -732,7 +739,8 @@ fun MapScreen(
     fun loadLaterConnections() {
         val target = directionsTo ?: return
         val page = transitNextPage ?: return
-        val from = myLocation() ?: return
+        val from = directionsFrom?.let { LatLng(it.lat, it.lon) }
+            ?: myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: return
         scope.launch {
             routing = true
             try {
@@ -765,6 +773,8 @@ fun MapScreen(
             // Without it the navigation notification is hidden; navigation itself works either way.
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // Navigation always goes from where the user is; another starting point was for a look.
+        directionsFrom = null
         navigating = true
         progress = null
         locationComponent()?.setNavigationPuck(context, accent, navigating = true)
@@ -1183,9 +1193,10 @@ fun MapScreen(
     // Fetch routes from the user's location to the destination.
     // Only the settings that change the route itself fetch it again.
     val routeOptions = listOf(settings.avoidHighways, settings.avoidTolls, settings.avoidFerries, settings.units)
-    LaunchedEffect(directionsTo, travelMode, routeRequest, hasLocationPermission, tripTime, routeOptions, stops) {
+    LaunchedEffect(directionsTo, directionsFrom, travelMode, routeRequest, hasLocationPermission, tripTime, routeOptions, stops) {
         val target = directionsTo ?: return@LaunchedEffect
-        if (!hasLocationPermission) {
+        val origin = directionsFrom
+        if (origin == null && !hasLocationPermission) {
             routeError = "Allow location access to get directions from where you are."
             return@LaunchedEffect
         }
@@ -1196,7 +1207,7 @@ fun MapScreen(
             itineraries = emptyList()
         }
         try {
-            var from = myLocation()
+            var from = origin?.toLocation() ?: myLocation()
             var waited = 0
             while (from == null && waited < 20) {
                 delay(500)
@@ -1681,6 +1692,8 @@ fun MapScreen(
                         PickFor.Stop -> "Add a stop"
                         PickFor.Home -> "Set home"
                         PickFor.Work -> "Set work"
+                        PickFor.Origin -> "Choose starting point"
+                        PickFor.Destination -> "Choose destination"
                     },
                     near = myLocation(),
                     suggestions = (shortcuts.values + lists.flatMap { it.places } + recents).distinctBy { it.name to it.lat },
@@ -1690,9 +1703,24 @@ fun MapScreen(
                             PickFor.Stop -> stops = stops + place
                             PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
                             PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
+                            PickFor.Origin -> directionsFrom = place
+                            PickFor.Destination -> {
+                                directionsTo = place
+                                lastDestination = place
+                            }
                         }
                     },
                     onDismiss = { picking = null },
+                    onPickMyLocation = when (purpose) {
+                        PickFor.Origin -> ({ picking = null; directionsFrom = null })
+                        PickFor.Destination -> myLocation()?.let { here ->
+                            {
+                                picking = null
+                                directionsTo = Place("Your location", "", here.latitude, here.longitude, key = MY_LOCATION_KEY)
+                            }
+                        }
+                        else -> null
+                    },
                 )
             }
             savingPlace?.let { place ->
@@ -1947,7 +1975,20 @@ fun MapScreen(
                         .then(trackTop),
                 )
                 destination != null -> DirectionsHeader(
+                    origin = directionsFrom,
                     destination = destination,
+                    onChangeOrigin = { picking = PickFor.Origin },
+                    onChangeDestination = { picking = PickFor.Destination },
+                    onSwap = {
+                        val here = myLocation()
+                        // From the user's location, the swap needs to know where that is.
+                        if (directionsFrom != null || here != null) {
+                            val newTo = directionsFrom ?: Place("Your location", "", here!!.latitude, here.longitude, key = MY_LOCATION_KEY)
+                            directionsFrom = destination.takeUnless { it.key == MY_LOCATION_KEY }
+                            directionsTo = newTo
+                            stops = stops.reversed()
+                        }
+                    },
                     mode = travelMode,
                     onModeChange = { travelMode = it },
                     onBack = ::exitDirections,
@@ -2587,4 +2628,9 @@ private class RouteAhead {
         segment = -1
         style.getSourceAs<GeoJsonSource>(ROUTE_HEAD_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(emptyList<Feature>()))
     }
+}
+
+private fun Place.toLocation() = Location("place").also {
+    it.latitude = lat
+    it.longitude = lon
 }

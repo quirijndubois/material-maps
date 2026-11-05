@@ -5,7 +5,9 @@ package app.materialmaps
 import android.text.format.DateFormat
 import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -195,7 +197,12 @@ private fun etaText(context: android.content.Context, seconds: Double): String =
 
 @Composable
 fun DirectionsHeader(
+    /** Where the route starts; null for the user's location. */
+    origin: Place?,
     destination: Place,
+    onChangeOrigin: () -> Unit,
+    onChangeDestination: () -> Unit,
+    onSwap: () -> Unit,
     mode: TravelMode,
     onModeChange: (TravelMode) -> Unit,
     onBack: () -> Unit,
@@ -218,6 +225,7 @@ fun DirectionsHeader(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    // Tapping either end picks another place; the arrows swap them.
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Filled.TripOrigin, contentDescription = null,
@@ -225,10 +233,19 @@ fun DirectionsHeader(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Your location",
+                            origin?.name ?: "Your location",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (origin == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(onClickLabel = "Change starting point", onClick = onChangeOrigin)
+                                .padding(vertical = 4.dp),
                         )
+                        IconButton(onClick = onSwap, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Filled.SwapVert, contentDescription = "Swap start and destination", modifier = Modifier.size(20.dp))
+                        }
                     }
                     if (withStops) stops.forEach { stop ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -260,7 +277,10 @@ fun DirectionsHeader(
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(onClickLabel = "Change destination", onClick = onChangeDestination)
+                                .padding(vertical = 4.dp),
                         )
                         if (withStops) {
                             IconButton(onClick = onAddStop, modifier = Modifier.size(32.dp)) {
