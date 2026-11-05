@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -22,14 +23,24 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
-    // One shared key so every build installs over the previous one.
-    // Fine for a personal sideloaded app; use a secret keystore before publishing to a store.
+    // Release signing comes from environment variables (CI secrets) or an untracked
+    // keystore.properties. Without either, the release APK is left unsigned, which is
+    // what F-Droid expects: it builds from source and signs with its own key.
+    val keystoreProps = Properties().apply {
+        rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    }
+    fun signingValue(env: String, prop: String): String? =
+        System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(prop)
+    val storePath = signingValue("MM_KEYSTORE_FILE", "storeFile")
+
     signingConfigs {
-        create("shared") {
-            storeFile = rootProject.file("keystore/materialmaps.jks")
-            storePassword = "materialmaps"
-            keyAlias = "materialmaps"
-            keyPassword = "materialmaps"
+        if (storePath != null) {
+            create("release") {
+                storeFile = rootProject.file(storePath)
+                storePassword = signingValue("MM_KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signingValue("MM_KEY_ALIAS", "keyAlias")
+                keyPassword = signingValue("MM_KEY_PASSWORD", "keyPassword")
+            }
         }
     }
 
@@ -38,11 +49,14 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("shared")
+            signingConfig = signingConfigs.findByName("release")
         }
-        debug {
-            signingConfig = signingConfigs.getByName("shared")
-        }
+    }
+
+    // F-Droid rejects the encrypted dependency metadata block Google adds to APKs.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     compileOptions {

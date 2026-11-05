@@ -50,7 +50,20 @@ You need JDK 17+ and the Android SDK. Android Studio sets both up.
 ./gradlew installRelease           # build and install on a connected device
 ```
 
-The signing key in `keystore/` is committed on purpose, so every build (local or CI) installs over the previous one. That's fine for a personal, sideloaded app. Use your own private key before publishing to a store.
+Release builds are unsigned unless you provide a key, either in an untracked `keystore.properties` in the project root:
+
+```properties
+storeFile=keystore/materialmaps.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+or through the environment variables `MM_KEYSTORE_FILE`, `MM_KEYSTORE_PASSWORD`, `MM_KEY_ALIAS` and `MM_KEY_PASSWORD`. CI reads them from the repository secrets `KEYSTORE_BASE64` (the base64-encoded keystore), `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD`.
+
+## Releasing
+
+F-Droid builds from git tags. To release, bump `versionCode` and `versionName` in `app/build.gradle.kts`, add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`, commit, and tag the commit `v<versionName>` (for example `v0.1.0`). The store listing lives in `fastlane/metadata/android/`.
 
 ## How it's built
 

@@ -1,0 +1,32 @@
+<p>A small, fast maps app built with Material You. It runs on open data only: no Google Play Services, no accounts, no API keys, no tracking.</p>
+
+<p>Search places, get driving, cycling, walking and public transport directions, follow turn-by-turn navigation, and check live departures at any stop or station. Public transport works best in the Netherlands, with live data for NS, GVB, RET, HTM, Arriva, Qbuzz and others.</p>
+
+<p><b>Map</b></p>
+<ul>
+<li>OpenStreetMap vector map from OpenFreeMap with 3D buildings, shops, cafés, sights and transit stops</li>
+<li>Light and dark themes; the dark map is recoloured with your wallpaper colours</li>
+<li>Live location with a smooth heading arrow, and a follow mode that rotates the map with your phone</li>
+</ul>
+
+<p><b>Search</b></p>
+<ul>
+<li>Results as you type, biased toward what's on screen</li>
+<li>Show all results on the map as pins</li>
+<li>Coordinates, recent places, and tap or long-press anything on the map</li>
+</ul>
+
+<p><b>Directions</b></p>
+<ul>
+<li>Up to three routes for driving, cycling and walking, with a step-by-step list</li>
+<li>Turn-by-turn navigation with automatic rerouting</li>
+<li>Public transport journeys with line colours, platforms, live delays and cancellations</li>
+<li>Hand the destination off to another navigation app</li>
+</ul>
+
+<p><b>Departures</b></p>
+<ul>
+<li>Live departure boards for every stop and station, with a tab per kind of transport</li>
+</ul>
+
+<p>Data and services: map tiles from OpenFreeMap, routing by Valhalla on the FOSSGIS server, public transport from Transitous (MOTIS), and search fallback from Photon by komoot. Map data © OpenStreetMap contributors.</p>

@@ -13,6 +13,10 @@ dist/
 
 # Local machine and IDE
 local.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
 *.iml
 .idea/
 .DS_Store
