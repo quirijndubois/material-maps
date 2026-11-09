@@ -52,7 +52,9 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.RampLeft
 import androidx.compose.material.icons.filled.RampRight
 import androidx.compose.material.icons.filled.RoundaboutRight
+import androidx.compose.material.icons.filled.Stairs
 import androidx.compose.material.icons.filled.Straight
+import androidx.compose.material.icons.filled.Elevator
 import androidx.compose.material.icons.filled.TripOrigin
 import androidx.compose.material.icons.filled.TurnSharpLeft
 import androidx.compose.material.icons.filled.TurnSharpRight
@@ -137,6 +139,10 @@ private fun maneuverIcon(m: Maneuver?): ImageVector = when (m?.type) {
     null -> Icons.Filled.Straight
     "depart" -> Icons.Filled.TripOrigin
     "arrive" -> Icons.Filled.Flag
+    // Public transport: the line's own kind of vehicle.
+    "board", "alight" -> transitModeIcon(m.modifier.orEmpty())
+    "stairs" -> Icons.Filled.Stairs
+    "elevator" -> Icons.Filled.Elevator
     "merge" -> Icons.Filled.Merge
     "roundabout", "rotary", "roundabout turn", "exit roundabout", "exit rotary" ->
         if (m.modifier?.contains("left") == true && m.type == "roundabout turn") Icons.Filled.RoundaboutLeft
@@ -555,11 +561,16 @@ fun NavigationPanel(
     muted: Boolean,
     onToggleMute: () -> Unit,
     onEnd: () -> Unit,
-    onSearchAlong: () -> Unit,
+    /** Null where there's nothing to search along, like on public transport. */
+    onSearchAlong: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    /** When the journey arrives, for public transport, which keeps to its timetable. */
+    arrival: Long? = null,
 ) {
     val context = LocalContext.current
-    val time = progress?.remainingTime ?: route?.duration ?: 0.0
+    val now = rememberNow()
+    val time = arrival?.let { ((it - now) / 1000.0).coerceAtLeast(0.0) }
+        ?: progress?.remainingTime ?: route?.duration ?: 0.0
     val distance = progress?.remainingDistance ?: route?.distance ?: 0.0
     ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
         Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -575,8 +586,10 @@ fun NavigationPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = onSearchAlong) {
-                Icon(Icons.Filled.Search, contentDescription = "Search along route")
+            if (onSearchAlong != null) {
+                IconButton(onClick = onSearchAlong) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search along route")
+                }
             }
             IconButton(onClick = onToggleMute) {
                 Icon(

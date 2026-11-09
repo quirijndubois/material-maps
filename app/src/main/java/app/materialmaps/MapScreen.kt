@@ -395,8 +395,12 @@ fun MapScreen(
     /**
      * Walking is navigated differently: the map turns with the phone and the dot sits where the
      * GPS puts it, as on foot the route is only a guide and the phone points where one looks.
+     * Public transport is navigated the same way, being mostly on foot and the rest on board.
      */
-    val walking by remember { derivedStateOf { travelMode == TravelMode.Walk } }
+    val walking by remember { derivedStateOf { travelMode == TravelMode.Walk || travelMode == TravelMode.Transit } }
+    /** While navigating a public transport journey: it, and it as a route to follow. */
+    var navItinerary by remember { mutableStateOf<Itinerary?>(null) }
+    var transitRoute by remember { mutableStateOf<Route?>(null) }
     var progress by remember { mutableStateOf<RouteProgress?>(null) }
     val routeAhead = remember { RouteAhead() }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
@@ -563,6 +567,9 @@ fun MapScreen(
         animator.start()
     }
 
+    /** The route being navigated: the chosen one, or the public transport journey. */
+    fun navRoute(): Route? = transitRoute ?: routes.getOrNull(routeIndex)
+
     /** How the camera follows the user while navigating: along the route, or on foot with the phone. */
     fun routeCameraMode() = if (walking) CameraMode.TRACKING_COMPASS else CameraMode.TRACKING_GPS
 
@@ -643,13 +650,12 @@ fun MapScreen(
 
     /** Fits [points] on screen beside or above the panel. */
     fun frame(points: List<LatLng>, bottomSpace: Int) {
-        val (left, top, right, bottom) = framePadding(bottomSpace)
+        val m = map ?: return
+        val padding = framePadding(bottomSpace)
+        // Flat: fitting a tilted view is only a guess, which leaves a long route partly off screen.
         runCatching {
-            map?.animateCamera(
-                CameraUpdateFactory.newLatLngBounds(LatLngBounds.Builder().includes(points).build(), left, top, right, bottom),
-                700,
-            )
-        }
+            m.getCameraForLatLngBounds(LatLngBounds.Builder().includes(points).build(), padding, m.cameraPosition.bearing, 0.0)
+        }.getOrNull()?.let { m.animateCamera(CameraUpdateFactory.newCameraPosition(it), 700) }
     }
 
     /** Puts [places] on the map as dots and fits the nearby ones on screen. */
@@ -932,6 +938,8 @@ fun MapScreen(
 
     fun stopNavigation() {
         navigating = false
+        navItinerary = null
+        transitRoute = null
         liveSpeed = null
         overview = false
         progress = null
@@ -962,7 +970,7 @@ fun MapScreen(
             }
             return
         }
-        val route = routes.getOrNull(routeIndex) ?: return
+        val route = navRoute() ?: return
         beforeOverview = if (follow != Follow.Off) null else m.cameraPosition
         stopTracking()
         overview = true
@@ -996,6 +1004,7 @@ fun MapScreen(
             try {
                 val more = Transitous.plan(
                     from.latitude, from.longitude, target.lat, target.lon, tripTime.time, tripTime.arriveBy, page,
+                    settings.transitAccess,
                 )
                 val seen = itineraries.map { it.departure to it.arrival }.toSet()
                 itineraries = (itineraries + more.itineraries.filterNot { (it.departure to it.arrival) in seen })
@@ -1016,7 +1025,8 @@ fun MapScreen(
         lastTrip = ref
     }
 
-    fun startNavigation() {
+    /** Navigates the chosen route, or public transport [itinerary]. */
+    fun startNavigation(itinerary: Itinerary? = null) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -1024,7 +1034,10 @@ fun MapScreen(
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         // Navigation always goes from where the user is; another starting point was for a look.
-        directionsFrom = null
+        // A journey keeps to its timetable though, so that's followed from wherever it starts.
+        if (itinerary == null) directionsFrom = null
+        navItinerary = itinerary
+        transitRoute = itinerary?.toRoute(directionsTo?.name ?: "your destination")
         navigating = true
         progress = null
         locationComponent()?.setNavigationPuck(context, style, accent, navigating = !walking, settings.vehicle)
@@ -1292,7 +1305,7 @@ fun MapScreen(
             m.addOnCameraMoveListener {
                 // Following, the camera sits on the arrow as it glides, so the route can be cut
                 // right where the arrow is on every frame.
-                if (navigating && locationComponent()?.cameraMode == routeCameraMode()) {
+                if (navigating && transitRoute == null && locationComponent()?.cameraMode == routeCameraMode()) {
                     val route = routes.getOrNull(routeIndex)
                     val s = style
                     val target = m.cameraPosition.target
@@ -1571,8 +1584,10 @@ fun MapScreen(
     // Fetch routes from the user's location to the destination.
     // Only the settings that change the route itself fetch it again.
     val routeOptions = listOf(settings.avoidHighways, settings.avoidTolls, settings.avoidFerries, settings.units)
-    LaunchedEffect(directionsTo, directionsFrom, travelMode, routeRequest, hasLocationPermission, tripTime, routeOptions, stops) {
+    LaunchedEffect(directionsTo, directionsFrom, travelMode, routeRequest, hasLocationPermission, tripTime, routeOptions, stops, settings.transitAccess) {
         val target = directionsTo ?: return@LaunchedEffect
+        // The journey being taken stays as it is.
+        if (navItinerary != null) return@LaunchedEffect
         val origin = directionsFrom
         if (origin == null && !hasLocationPermission) {
             routeError = "Allow location access to get directions from where you are."
@@ -1599,6 +1614,7 @@ fun MapScreen(
             if (travelMode == TravelMode.Transit) {
                 val plan = Transitous.plan(
                     from.latitude, from.longitude, target.lat, target.lon, tripTime.time, tripTime.arriveBy,
+                    access = settings.transitAccess,
                 )
                 itineraryIndex = null
                 itineraries = plan.itineraries
@@ -1638,6 +1654,11 @@ fun MapScreen(
             routeAhead.clear(s)
             main.setGeoJson(FeatureCollection.fromFeatures(route?.legFeatures().orEmpty()))
         }
+        // First on screen; the alternatives can take a moment to work out on a long route.
+        if (route != null && route.points.size >= 2 && !navigating) {
+            stopTracking()
+            frame(route.points, 300)
+        }
         // Alternatives only where they go another way: under the chosen route they'd show
         // through its gaps, and between its dots on foot.
         val others = withContext(Dispatchers.Default) {
@@ -1650,10 +1671,6 @@ fun MapScreen(
             }
         }
         alternatives.setGeoJson(FeatureCollection.fromFeatures(others))
-        if (route != null && route.points.size >= 2 && !navigating) {
-            stopTracking()
-            frame(route.points, 300)
-        }
     }
 
     // A walk is drawn as dots, like the walks between rides; other routes as a solid line.
@@ -1886,9 +1903,10 @@ fun MapScreen(
     }
 
     // Follow progress along the route while navigating, and reroute when the user leaves it.
-    LaunchedEffect(navigating, routes, routeIndex) {
+    LaunchedEffect(navigating, routes, routeIndex, transitRoute) {
         if (!navigating) return@LaunchedEffect
-        val route = routes.getOrNull(routeIndex) ?: return@LaunchedEffect
+        val route = navRoute() ?: return@LaunchedEffect
+        val transit = transitRoute != null
         var offRouteTicks = 0
         var speed = 0f
         var nextAnnouncement = 0
@@ -1922,7 +1940,7 @@ fun MapScreen(
                 liveSpeed = if (here.hasSpeed()) here.speed else null
                 // Only show the road ahead. While following, the camera listener does this every
                 // frame; otherwise the latest fix will do.
-                if (locationComponent()?.cameraMode != routeCameraMode()) {
+                if (!transit && locationComponent()?.cameraMode != routeCameraMode()) {
                     style?.let { routeAhead.draw(it, route, p.snapped) }
                 }
                 val component = locationComponent()
@@ -1935,7 +1953,8 @@ fun MapScreen(
                 val off = p.offRoute > 50 && here.accuracy < 50 && !p.arrived
                 offRouteTicks = if (off) offRouteTicks + 1 else 0
                 val now = System.currentTimeMillis()
-                if (offRouteTicks >= 3 && !routing && now - lastRerouteAt > 15_000) {
+                // A journey isn't rerouted: its rides go where they go, whatever the user does.
+                if (!transit && offRouteTicks >= 3 && !routing && now - lastRerouteAt > 15_000) {
                     lastRerouteAt = now
                     routeRequest++
                 }
@@ -2081,7 +2100,7 @@ fun MapScreen(
                 val destination = directionsTo
                 if (navigating && destination != null) {
                     PipBanner(
-                        route = routes.getOrNull(routeIndex),
+                        route = navRoute(),
                         progress = progress,
                         destination = destination,
                         modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(6.dp),
@@ -2329,7 +2348,8 @@ fun MapScreen(
                                 modifier = panelModifier,
                             )
                             target == Panel.Navigation && destination != null -> NavigationPanel(
-                                route = routes.getOrNull(routeIndex),
+                                route = navRoute(),
+                                arrival = navItinerary?.arrival,
                                 progress = progress,
                                 muted = !settings.voiceGuidance,
                                 onToggleMute = {
@@ -2337,7 +2357,7 @@ fun MapScreen(
                                     onSettingsChange(settings.copy(voiceGuidance = !settings.voiceGuidance))
                                 },
                                 onEnd = ::stopNavigation,
-                                onSearchAlong = { showAlong = true },
+                                onSearchAlong = if (navItinerary == null) ({ showAlong = true }) else null,
                                 modifier = panelModifier,
                             )
                             target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
@@ -2354,6 +2374,9 @@ fun MapScreen(
                                 },
                                 onLater = if (transitNextPage != null) ::loadLaterConnections else null,
                                 onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
+                                access = settings.transitAccess,
+                                onAccessChange = { onSettingsChange(settings.copy(transitAccess = it)) },
+                                onStart = { startNavigation(it) },
                                 modifier = panelModifier,
                             )
                             target == Panel.Along -> AlongRoutePanel(
@@ -2378,7 +2401,7 @@ fun MapScreen(
                                     if (hasLocationPermission) routeRequest++
                                     else permissionLauncher.launch(LOCATION_PERMISSIONS)
                                 },
-                                onStart = ::startNavigation,
+                                onStart = { startNavigation() },
                                 onOpenElsewhere = { context.openDirections(destination) },
                                 onSearchAlong = { showAlong = true },
                                 modifier = panelModifier,
@@ -2480,7 +2503,7 @@ fun MapScreen(
                 val topWidth = if (wide) Modifier.width(SIDE_PANEL_WIDTH) else Modifier.fillMaxWidth()
                 when {
                     destination != null && navigating -> NavigationBanner(
-                        route = routes.getOrNull(routeIndex),
+                        route = navRoute(),
                         progress = progress,
                         destination = destination,
                         rerouting = routing,

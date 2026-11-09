@@ -28,12 +28,17 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DirectionsBoat
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.LocalTaxi
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Subway
 import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.Tram
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -91,6 +96,7 @@ fun transitModeIcon(mode: String): ImageVector = when (mode) {
     "WALK" -> Icons.AutoMirrored.Filled.DirectionsWalk
     "BIKE", "RENTAL" -> Icons.AutoMirrored.Filled.DirectionsBike
     "CAR" -> Icons.Filled.DirectionsCar
+    "TAXI" -> Icons.Filled.LocalTaxi
     "BUS", "COACH" -> Icons.Filled.DirectionsBus
     "TRAM", "CABLE_CAR" -> Icons.Filled.Tram
     "SUBWAY", "METRO" -> Icons.Filled.Subway
@@ -189,9 +195,13 @@ fun TransitPanel(
     onRetry: () -> Unit,
     onLater: (() -> Unit)?,
     onOpenTrip: (TransitLeg) -> Unit,
+    access: TransitAccess,
+    onAccessChange: (TransitAccess) -> Unit,
+    onStart: (Itinerary) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pickingTime by remember { mutableStateOf(false) }
+    var pickingAccess by remember { mutableStateOf(false) }
     val itinerary = selected?.let { itineraries.getOrNull(it) }
     ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
         Column(Modifier.padding(vertical = 12.dp)) {
@@ -210,6 +220,13 @@ fun TransitPanel(
                         },
                         leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     )
+                    Spacer(Modifier.width(8.dp))
+                    AssistChip(
+                        onClick = { pickingAccess = true },
+                        label = { Text(accessText(access), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     Spacer(Modifier.weight(1f))
                     if (loading && itineraries.isNotEmpty()) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 }
@@ -227,7 +244,12 @@ fun TransitPanel(
                     Text(error ?: "No connections found.", style = MaterialTheme.typography.bodyLarge)
                     TextButton(onClick = onRetry, modifier = Modifier.padding(top = 4.dp)) { Text("Try again") }
                 }
-                itinerary != null -> ItineraryDetails(itinerary, onBack = { onSelect(null) }, onOpenTrip = onOpenTrip)
+                itinerary != null -> ItineraryDetails(
+                    itinerary,
+                    onBack = { onSelect(null) },
+                    onOpenTrip = onOpenTrip,
+                    onStart = { onStart(itinerary) },
+                )
                 else -> LazyColumn(Modifier.heightIn(max = listHeight(380.dp))) {
                     itemsIndexed(itineraries) { i, it ->
                         if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
@@ -241,6 +263,16 @@ fun TransitPanel(
                 }
             }
         }
+    }
+    if (pickingAccess) {
+        AccessDialog(
+            initial = access,
+            onDismiss = { pickingAccess = false },
+            onConfirm = {
+                pickingAccess = false
+                onAccessChange(it)
+            },
+        )
     }
     if (pickingTime) {
         TripTimeDialog(
@@ -288,13 +320,14 @@ private fun ItineraryRow(itinerary: Itinerary, onClick: () -> Unit) {
                         modifier = Modifier.size(16.dp).align(Alignment.CenterVertically),
                     )
                 }
-                if (leg.isWalk) {
+                if (leg.isStreet) {
                     Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            Icons.AutoMirrored.Filled.DirectionsWalk, contentDescription = "Walk",
+                            transitModeIcon(leg.mode), contentDescription = streetVerb(leg.mode),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp),
                         )
-                        if (itinerary.rides.isEmpty()) {
+                        // Walks between rides are short; a ride or drive to the station is worth its time.
+                        if (itinerary.rides.isEmpty() || !leg.isWalk) {
                             Text(formatDuration((leg.arrival - leg.departure) / 1000.0), style = MaterialTheme.typography.labelMedium)
                         }
                     }
@@ -324,7 +357,7 @@ private fun ItineraryRow(itinerary: Itinerary, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit, onOpenTrip: (TransitLeg) -> Unit) {
+private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit, onOpenTrip: (TransitLeg) -> Unit, onStart: () -> Unit) {
     Row(Modifier.padding(start = 4.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "All connections") }
         Text(
@@ -341,9 +374,82 @@ private fun ItineraryDetails(itinerary: Itinerary, onBack: () -> Unit, onOpenTri
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    LazyColumn(Modifier.heightIn(max = listHeight(380.dp))) {
+    LazyColumn(Modifier.heightIn(max = listHeight(330.dp))) {
         items(itinerary.legs) { leg -> LegRow(leg, onClick = if (leg.tripId != null) ({ onOpenTrip(leg) }) else null) }
     }
+    Button(onClick = onStart, modifier = Modifier.padding(start = 20.dp, top = 8.dp)) {
+        Icon(Icons.Filled.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Start")
+    }
+}
+
+/** Walk, Cycle, Drive or Taxi: how a leg of one's own is done. */
+private fun streetVerb(mode: String) = when (mode) {
+    "BIKE", "RENTAL" -> "Cycle"
+    "CAR" -> "Drive"
+    "TAXI" -> "Taxi"
+    else -> "Walk"
+}
+
+/** "Walk only", or what else may be used, like "Bike or car · Taxi after". */
+private fun accessText(access: TransitAccess): String {
+    if (access.isDefault) return "Walk only"
+    fun Set<Access>.text() = Access.entries.filter { it in this }.joinToString(" or ") { it.label.lowercase() }.replaceFirstChar { it.uppercase() }
+    return listOfNotNull(
+        access.start.takeIf { it.isNotEmpty() }?.text(),
+        access.end.takeIf { it.isNotEmpty() }?.let { it.text() + " after" },
+    ).joinToString(" · ")
+}
+
+/** Ways besides walking to get to the first stop and on from the last, any of them combined. */
+@Composable
+private fun AccessDialog(initial: TransitAccess, onDismiss: () -> Unit, onConfirm: (TransitAccess) -> Unit) {
+    var access by remember { mutableStateOf(initial) }
+    @Composable
+    fun Choices(title: String, chosen: Set<Access>, labels: (Access) -> String, onChange: (Set<Access>) -> Unit) {
+        Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Access.entries.forEach { option ->
+                val on = option in chosen
+                FilterChip(
+                    selected = on,
+                    onClick = { onChange(if (on) chosen - option else chosen + option) },
+                    label = { Text(labels(option)) },
+                    leadingIcon = { Icon(accessIcon(option), contentDescription = null, modifier = Modifier.size(18.dp)) },
+                )
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Getting to and from stops") },
+        text = {
+            Column {
+                Text(
+                    "Walking is always an option. Pick what else you'd use; the fastest journeys show.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Choices(
+                    "To the first stop", access.start,
+                    labels = { when (it) { Access.Bike -> "Bike"; Access.Car -> "Park & ride"; Access.Taxi -> "Taxi" } },
+                ) { access = access.copy(start = it) }
+                Choices(
+                    "From the last stop", access.end,
+                    labels = { when (it) { Access.Bike -> "Bike"; Access.Car -> "Car"; Access.Taxi -> "Taxi" } },
+                ) { access = access.copy(end = it) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(access) }) { Text("Done") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun accessIcon(access: Access): ImageVector = when (access) {
+    Access.Bike -> Icons.AutoMirrored.Filled.DirectionsBike
+    Access.Car -> Icons.Filled.DirectionsCar
+    Access.Taxi -> Icons.Filled.LocalTaxi
 }
 
 @Composable
@@ -361,15 +467,22 @@ private fun LegRow(leg: TransitLeg, onClick: (() -> Unit)?) {
             modifier = Modifier.width(56.dp),
         )
         Column(Modifier.weight(1f)) {
-            if (leg.isWalk) {
+            if (leg.isStreet) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.AutoMirrored.Filled.DirectionsWalk, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    Icon(transitModeIcon(leg.mode), contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
                         buildString {
-                            append("Walk ").append(formatDuration((leg.arrival - leg.departure) / 1000.0))
+                            append(streetVerb(leg.mode)).append(" ").append(formatDuration((leg.arrival - leg.departure) / 1000.0))
                             leg.distance?.let { append(" (").append(formatDistance(it)).append(")") }
-                            append(" to ").append(leg.toName.takeUnless { it == "END" } ?: "destination")
+                            append(" to ").append(
+                                when (leg.toName) {
+                                    "END" -> "destination"
+                                    // Where a car is parked or one is dropped off: a spot by the stop.
+                                    "" -> if (leg.mode == "CAR") "a car park" else "the stop"
+                                    else -> leg.toName
+                                }
+                            )
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onSurfaceVariant,

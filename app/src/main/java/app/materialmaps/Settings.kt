@@ -47,6 +47,8 @@ data class Settings(
     val vehicle: Vehicle = Vehicle.Arrow,
     /** Ids of the [QuickButton]s to show, in order. */
     val quickButtons: List<String> = QuickButton.defaults,
+    /** Besides walking, how public transport journeys may start and end. */
+    val transitAccess: TransitAccess = TransitAccess(),
 ) {
     companion object {
         private const val PREFS = "settings"
@@ -73,8 +75,15 @@ data class Settings(
                 vehicle = enumOr(p.getString("vehicle", null), d.vehicle),
                 quickButtons = p.getString("quickButtons", null)
                     ?.split(',')?.filter { QuickButton.byId(it) != null } ?: d.quickButtons,
+                transitAccess = TransitAccess(
+                    start = accessSet(p.getString("transitAccessStart", null)),
+                    end = accessSet(p.getString("transitAccessEnd", null)),
+                ),
             )
         }
+
+        private fun accessSet(names: String?): Set<Access> =
+            names?.split(',')?.mapNotNull { name -> Access.entries.firstOrNull { it.name == name } }?.toSet().orEmpty()
 
         private inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E =
             enumValues<E>().firstOrNull { it.name == name } ?: default
@@ -97,6 +106,8 @@ data class Settings(
             .putBoolean("voiceGuidance", voiceGuidance)
             .putString("vehicle", vehicle.name)
             .putString("quickButtons", quickButtons.joinToString(","))
+            .putString("transitAccessStart", transitAccess.start.joinToString(",") { it.name })
+            .putString("transitAccessEnd", transitAccess.end.joinToString(",") { it.name })
             .apply()
     }
 }

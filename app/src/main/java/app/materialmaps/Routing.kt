@@ -10,6 +10,7 @@ import kotlin.math.acos
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -150,12 +151,17 @@ class Route(
         if (points.size < 2 || other.points.size < 2) return listOf(points)
         // Every few meters along this route, so long straight segments aren't judged by their ends only.
         val samples = mutableListOf(points.first())
+        val vertex = mutableListOf(true)
         for (i in 1 until points.size) {
             val steps = ceil(metersBetween(points[i - 1], points[i]) / SAMPLE_METERS).toInt().coerceAtLeast(1)
-            for (k in 1..steps) samples += points[i - 1].interpolate(points[i], k.toDouble() / steps)
+            for (k in 1..steps) {
+                samples += points[i - 1].interpolate(points[i], k.toDouble() / steps)
+                vertex += k == steps
+            }
         }
-        val segments = 0 until other.points.size - 1
-        val apart = samples.map { other.nearest(it.latitude, it.longitude, segments).distance > within }
+        val near = other.segmentsNear(within)
+        val apart = samples.map { near(it).none { s -> other.nearest(it.latitude, it.longitude, s..s).distance <= within } }
+        // The line itself only needs its own points, and the samples where a stretch starts and ends.
         val stretches = mutableListOf<List<LatLng>>()
         var i = 0
         while (i < samples.size) {
@@ -165,9 +171,38 @@ class Route(
             }
             val start = (i - 1).coerceAtLeast(0)
             while (i < samples.size && apart[i]) i++
-            stretches += samples.subList(start, (i + 1).coerceAtMost(samples.size))
+            val end = i.coerceAtMost(samples.lastIndex)
+            stretches += (start..end).filter { it == start || it == end || vertex[it] }.map { samples[it] }
         }
         return stretches
+    }
+
+    /**
+     * A lookup of the segments that may lie within [within] meters of a point: the route's
+     * segments filed in a grid of squares that size, so a long route isn't searched end to end
+     * for every point.
+     */
+    private fun segmentsNear(within: Double): (LatLng) -> List<Int> {
+        // Flat meters around the start; the squares are twice the size asked, which covers the
+        // stretching of this flat map far north or south of there.
+        val cosLat = cos(Math.toRadians(points.first().latitude))
+        val size = within * 2
+        fun cell(p: LatLng) = floor(p.longitude * cosLat * METERS_PER_DEGREE / size).toLong() to
+            floor(p.latitude * METERS_PER_DEGREE / size).toLong()
+        fun key(x: Long, y: Long) = (x shl 32) xor (y and 0xffffffffL)
+        val grid = HashMap<Long, MutableList<Int>>()
+        for (i in 0 until points.size - 1) {
+            // Filed under the squares it passes, stepping along it by half a square; a point it
+            // passes close by is then at most a square away from one of those.
+            val steps = ceil(metersBetween(points[i], points[i + 1]) / (size / 2)).toInt().coerceAtLeast(1)
+            (0..steps).map { cell(points[i].interpolate(points[i + 1], it.toDouble() / steps)) }.distinct().forEach { (x, y) ->
+                grid.getOrPut(key(x, y)) { mutableListOf() } += i
+            }
+        }
+        return { p ->
+            val (x, y) = cell(p)
+            (x - 1..x + 1).flatMap { cx -> (y - 1..y + 1).flatMap { cy -> grid[key(cx, cy)].orEmpty() } }
+        }
     }
 
     private fun alongAt(segment: Int, t: Double) =

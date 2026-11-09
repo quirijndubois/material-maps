@@ -4,13 +4,27 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.geometry.LatLng
 import java.net.URLEncoder
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import java.time.Instant
 import kotlin.math.cos
 import kotlin.math.hypot
 
+/** One turn of a walk, ride or drive to or from a stop, as MOTIS gives it. */
+data class TransitStep(
+    /** Like LEFT, SLIGHTLY_RIGHT, CIRCLE_CLOCKWISE or STAIRS. */
+    val direction: String,
+    val street: String?,
+    val exit: String?,
+    val start: LatLng,
+)
+
 /** A ride or a walk within a public transport journey. Times are epoch millis. */
 data class TransitLeg(
-    /** MOTIS mode, such as WALK, BUS, TRAM, SUBWAY, FERRY or REGIONAL_RAIL. */
+    /**
+     * MOTIS mode, such as WALK, BIKE, CAR, BUS, TRAM, SUBWAY, FERRY or REGIONAL_RAIL; TAXI for
+     * a drive asked for as one (MOTIS calls that CAR too).
+     */
     val mode: String,
     /** For looking up the whole trip; rides only. */
     val tripId: String?,
@@ -35,13 +49,27 @@ data class TransitLeg(
     /** Meters; walks only. */
     val distance: Double?,
     val points: List<LatLng>,
+    /** Turn by turn; walks, rides and drives only. */
+    val steps: List<TransitStep> = emptyList(),
 ) {
     val isWalk get() = mode == "WALK"
+    /** On one's own way rather than on a line: walking, cycling, driving or by taxi. */
+    val isStreet get() = mode in STREET_MODES
     val delayMinutes get() = ((departure - scheduledDeparture) / 60_000).toInt()
 }
 
 data class Itinerary(val legs: List<TransitLeg>, val departure: Long, val arrival: Long, val transfers: Int) {
-    val rides get() = legs.filterNot { it.isWalk || it.mode == "BIKE" || it.mode == "CAR" }
+    val rides get() = legs.filterNot { it.isStreet }
+}
+
+private val STREET_MODES = setOf("WALK", "BIKE", "RENTAL", "CAR", "TAXI")
+
+/** Other ways than walking to get to the first stop, or on from the last one. */
+enum class Access(val label: String) { Bike("Bike"), Car("Car"), Taxi("Taxi") }
+
+/** How a journey may start and end besides walking, which is always allowed. */
+data class TransitAccess(val start: Set<Access> = emptySet(), val end: Set<Access> = emptySet()) {
+    val isDefault get() = start.isEmpty() && end.isEmpty()
 }
 
 data class TransitPlan(val itineraries: List<Itinerary>, val nextPage: String?)
@@ -173,6 +201,10 @@ data class Trip(
 object Transitous {
     private const val BASE = "https://api.transitous.org/api/v1"
 
+    /**
+     * Journeys from one place to another, getting to and from the stops on foot or as [access]
+     * allows. [page] is a [TransitPlan.nextPage] of the same request, for later (or earlier) ones.
+     */
     suspend fun plan(
         fromLat: Double,
         fromLon: Double,
@@ -181,25 +213,92 @@ object Transitous {
         time: Long?,
         arriveBy: Boolean,
         page: String? = null,
+        access: TransitAccess = TransitAccess(),
+    ): TransitPlan = coroutineScope {
+        // Parking the car and being dropped off both come back as a drive, so a journey can
+        // only say which it was when they're asked for separately: one request for each.
+        fun drives(options: Set<Access>) = listOf(Access.Car, Access.Taxi).filter { it in options }.ifEmpty { listOf(null) }
+        val variants = drives(access.start).flatMap { start -> drives(access.end).map { end -> start to end } }
+        val pages = page?.split(PAGE_SEPARATOR)
+        val plans = variants.mapIndexed { i, (startDrive, endDrive) ->
+            val variantPage = pages?.getOrNull(i)
+            if (pages != null && variantPage.isNullOrEmpty()) return@mapIndexed null
+            async {
+                runCatching { planOne(fromLat, fromLon, toLat, toLon, time, arriveBy, variantPage, access, startDrive, endDrive) }
+            }
+        }.map { it?.await() }
+        val found = plans.mapNotNull { it?.getOrNull() }
+        if (found.isEmpty()) {
+            throw plans.firstNotNullOfOrNull { it?.exceptionOrNull() } ?: RouteException("Couldn't plan a public transport trip.")
+        }
+        // The same walk-only journey can come from several requests.
+        val seen = HashSet<List<Any?>>()
+        TransitPlan(
+            itineraries = found.flatMap { it.itineraries }
+                .filter { seen.add(listOf(it.departure, it.arrival) + it.legs.map { leg -> leg.mode to leg.tripId }) }
+                .sortedBy { if (arriveBy) -it.departure else it.arrival },
+            nextPage = plans.map { it?.getOrNull()?.nextPage.orEmpty() }
+                .takeIf { cursors -> cursors.any { it.isNotEmpty() } }
+                ?.joinToString(PAGE_SEPARATOR),
+        )
+    }
+
+    private suspend fun planOne(
+        fromLat: Double,
+        fromLon: Double,
+        toLat: Double,
+        toLon: Double,
+        time: Long?,
+        arriveBy: Boolean,
+        page: String?,
+        access: TransitAccess,
+        startDrive: Access?,
+        endDrive: Access?,
     ): TransitPlan {
+        val pre = listOfNotNull(
+            "WALK",
+            "BIKE".takeIf { Access.Bike in access.start },
+            when (startDrive) { Access.Car -> "CAR_PARKING"; Access.Taxi -> "CAR_DROPOFF"; else -> null },
+        )
+        val post = listOfNotNull(
+            "WALK",
+            "BIKE".takeIf { Access.Bike in access.end },
+            when (endDrive) { Access.Car -> "CAR"; Access.Taxi -> "CAR_DROPOFF"; else -> null },
+        )
         val url = buildString {
             append("$BASE/plan?fromPlace=$fromLat,$fromLon&toPlace=$toLat,$toLon")
             append("&time=").append(Instant.ofEpochMilli(time ?: System.currentTimeMillis()))
             if (arriveBy) append("&arriveBy=true")
             if (page != null) append("&pageCursor=").append(URLEncoder.encode(page, "UTF-8"))
+            // Cycling or driving reaches stations further away than the 15 minutes' walk MOTIS looks at.
+            if (pre.size > 1) append("&preTransitModes=").append(pre.joinToString(",")).append("&maxPreTransitTime=$ACCESS_SECONDS")
+            if (post.size > 1) append("&postTransitModes=").append(post.joinToString(",")).append("&maxPostTransitTime=$ACCESS_SECONDS")
+            if (Access.Bike in access.start && Access.Bike in access.end) append("&directModes=WALK,BIKE")
         }
         val json = try {
             JSONObject(httpGet(url))
         } catch (e: HttpException) {
             throw RouteException("Couldn't plan a public transport trip.")
         }
-        val transit = json.optJSONArray("itineraries").objects().map(::parseItinerary)
+        fun parse(it: JSONObject) = parseItinerary(it).asked(startDrive, endDrive)
+        val transit = json.optJSONArray("itineraries").objects().map(::parse)
         // Walking all the way is offered separately when the destination is close.
-        val direct = if (page == null) json.optJSONArray("direct").objects().map(::parseItinerary) else emptyList()
+        val direct = if (page == null) json.optJSONArray("direct").objects().map(::parse) else emptyList()
         return TransitPlan(
-            itineraries = (transit + direct).sortedBy { if (arriveBy) -it.departure else it.arrival },
+            itineraries = transit + direct,
             nextPage = json.optString(if (arriveBy) "previousPageCursor" else "nextPageCursor").ifBlank { null },
         )
+    }
+
+    /** Calls a drive before the first ride, or after the last, a taxi when that was asked for. */
+    private fun Itinerary.asked(startDrive: Access?, endDrive: Access?): Itinerary {
+        val first = legs.indexOfFirst { !it.isStreet }
+        if (first < 0) return this
+        val last = legs.indexOfLast { !it.isStreet }
+        return copy(legs = legs.mapIndexed { i, leg ->
+            val taxi = leg.mode == "CAR" && ((i < first && startDrive == Access.Taxi) || (i > last && endDrive == Access.Taxi))
+            if (taxi) leg.copy(mode = "TAXI") else leg
+        })
     }
 
     /** Upcoming departures from every stop within [radius] meters. */
@@ -338,6 +437,7 @@ object Transitous {
                 points = geometry?.let { g ->
                     decodePolyline(g.optString("points"), g.optString("precision", "7").toIntOrNull() ?: 7)
                 }.orEmpty(),
+                steps = leg.optJSONArray("steps").objects().mapNotNull(::parseStep),
             )
         }
         return Itinerary(
@@ -347,6 +447,21 @@ object Transitous {
             transfers = it.optInt("transfers"),
         )
     }
+
+    private fun parseStep(step: JSONObject): TransitStep? {
+        val polyline = step.optJSONObject("polyline") ?: return null
+        val start = decodePolyline(polyline.optString("points"), polyline.optInt("precision", 7)).firstOrNull() ?: return null
+        return TransitStep(
+            direction = step.optString("relativeDirection"),
+            street = step.str("streetName"),
+            exit = step.str("exit"),
+            start = start,
+        )
+    }
+
+    private const val PAGE_SEPARATOR = "\n"
+    /** The longest drive or ride to or from a stop that's looked for, in seconds. */
+    private const val ACCESS_SECONDS = 1800
 
     private fun JSONObject.modes(): List<String> =
         optJSONArray("modes")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
