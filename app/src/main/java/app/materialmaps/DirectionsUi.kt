@@ -88,6 +88,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -277,11 +278,12 @@ fun DirectionsHeader(
                             Icon(Icons.Filled.SwapVert, contentDescription = "Swap start and destination", modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (withStops) stops.forEach { stop ->
+                    if (withStops) stops.forEachIndexed { i, stop ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // In the color of the stretch of route that leads to it.
                             Icon(
                                 Icons.Filled.TripOrigin, contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp),
+                                tint = Color(legColor(i, MaterialTheme.colorScheme.primary.toArgb())), modifier = Modifier.size(16.dp),
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
@@ -449,6 +451,12 @@ fun RoutePanel(
         }
     }
 }
+
+/** Colors for the legs of a route with stops, after the app's own ([first]) for the first. */
+private val LEG_COLORS = listOf(0xFF1E88E5, 0xFF43A047, 0xFFFB8C00, 0xFF8E24AA, 0xFF00897B, 0xFFD81B60).map { it.toInt() }
+
+/** The color of [leg], the stretch of route to stop number [leg], or after the last to the destination. */
+fun legColor(leg: Int, first: Int): Int = if (leg == 0) first else LEG_COLORS[(leg - 1) % LEG_COLORS.size]
 
 /** The big next-turn banner shown at the top while navigating. */
 @Composable

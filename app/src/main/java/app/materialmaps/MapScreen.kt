@@ -1042,6 +1042,16 @@ fun MapScreen(
                 add(line(ROUTE_HEAD_CASING_LAYER, ROUTE_HEAD_SOURCE, casing, 6f, border = 4f))
                 add(line(ROUTE_LAYER, ROUTE_SOURCE, accent, 6f))
                 add(line(ROUTE_HEAD_LAYER, ROUTE_HEAD_SOURCE, accent, 6f))
+                // With stops, each leg in its own color: the app's for the first, then the others.
+                fun byLeg(shade: Float) = Expression.match(
+                    Expression.coalesce(Expression.get("leg"), Expression.literal(0)),
+                    Expression.color(accent),
+                    *(0 until 16).map { i ->
+                        Expression.stop(i, Expression.color(ColorUtils.blendARGB(legColor(i, accent), android.graphics.Color.BLACK, shade)))
+                    }.toTypedArray(),
+                )
+                listOf(ROUTE_LAYER, ROUTE_HEAD_LAYER).forEach { loaded.getLayer(it)?.setProperties(PropertyFactory.lineColor(byLeg(0f))) }
+                listOf(ROUTE_CASING_LAYER, ROUTE_HEAD_CASING_LAYER).forEach { loaded.getLayer(it)?.setProperties(PropertyFactory.lineColor(byLeg(0.35f))) }
                 // Walks as dots, rides in the line's own color.
                 add(
                     line(TRANSIT_WALK_LAYER, TRANSIT_WALK_SOURCE, colors.onSurfaceVariant.toArgb(), 5f)
@@ -1531,7 +1541,7 @@ fun MapScreen(
         val route = routes.getOrNull(routeIndex)
         if (!navigating) {
             routeAhead.clear(s)
-            main.setGeoJson(FeatureCollection.fromFeatures(listOfNotNull(route?.let { Feature.fromGeometry(it.line()) })))
+            main.setGeoJson(FeatureCollection.fromFeatures(route?.legFeatures().orEmpty()))
         }
         alternatives.setGeoJson(
             FeatureCollection.fromFeatures(
@@ -3006,13 +3016,12 @@ private class RouteAhead {
         if (route !== this.route || p.segment != segment) {
             this.route = route
             segment = p.segment
-            val rest = route.points.subList(next, route.points.size).map(::point)
-            style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(
-                FeatureCollection.fromFeatures(if (rest.size < 2) emptyList() else listOf(Feature.fromGeometry(LineString.fromLngLats(rest))))
-            )
+            style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(route.legFeatures(from = next)))
         }
         style.getSourceAs<GeoJsonSource>(ROUTE_HEAD_SOURCE)?.setGeoJson(
-            Feature.fromGeometry(LineString.fromLngLats(listOf(point(p.snapped), point(route.points[next]))))
+            Feature.fromGeometry(LineString.fromLngLats(listOf(point(p.snapped), point(route.points[next])))).apply {
+                addNumberProperty("leg", route.legAt(p.segment))
+            }
         )
     }
 
@@ -3020,6 +3029,13 @@ private class RouteAhead {
         route = null
         segment = -1
         style.getSourceAs<GeoJsonSource>(ROUTE_HEAD_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(emptyList<Feature>()))
+    }
+}
+
+/** The route from point [from] on as lines, one per leg, each knowing which leg it is for its color. */
+private fun Route.legFeatures(from: Int = 0): List<Feature> = legs(from).map { (leg, points) ->
+    Feature.fromGeometry(LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })).apply {
+        addNumberProperty("leg", leg)
     }
 }
 

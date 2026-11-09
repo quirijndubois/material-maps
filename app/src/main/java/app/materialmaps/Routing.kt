@@ -82,7 +82,19 @@ class Route(
     val announcements: List<Announcement> = emptyList(),
     /** [points] as Valhalla sent it, for looking up more about the roads. */
     val shape: String = "",
+    /** Where each leg starts in [points]: one leg to each stop, then one to the destination. */
+    val legStarts: List<Int> = listOf(0),
 ) {
+    /** The points of each leg, each ending where the next starts, from point [from] on. */
+    fun legs(from: Int = 0): List<Pair<Int, List<LatLng>>> = legStarts.indices.mapNotNull { leg ->
+        val start = maxOf(legStarts[leg], from)
+        val end = legStarts.getOrNull(leg + 1) ?: points.lastIndex
+        if (end - start < 1) null else leg to points.subList(start, end + 1)
+    }
+
+    /** The leg point [index] is on. */
+    fun legAt(index: Int): Int = legStarts.indexOfLast { it <= index }.coerceAtLeast(0)
+
     /** Distance along the route to each point, in meters. */
     private val along = DoubleArray(points.size).also { a ->
         for (i in 1 until points.size) a[i] = a[i - 1] + metersBetween(points[i - 1], points[i])
@@ -271,7 +283,9 @@ object Valhalla {
         val announcements = ArrayList<Announcement>()
         var stepStart = 0.0
         var searchFrom = 0
+        val legStarts = ArrayList<Int>()
         route.getJSONArray("legs").map { leg ->
+            legStarts += searchFrom
             leg.getJSONArray("steps").map { step ->
                 val m = step.getJSONObject("maneuver")
                 val location = m.getJSONArray("location")
@@ -316,6 +330,7 @@ object Valhalla {
             maneuvers = maneuvers,
             announcements = announcements.filter { it.text.isNotBlank() }.sortedBy { it.at },
             shape = shape,
+            legStarts = legStarts.ifEmpty { listOf(0) },
         )
     }
 
