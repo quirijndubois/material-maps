@@ -37,6 +37,15 @@ import androidx.compose.material.icons.outlined.Sailing
 import androidx.compose.material.icons.outlined.SatelliteAlt
 import androidx.compose.material.icons.outlined.Subway
 import androidx.compose.material.icons.outlined.Terrain
+import androidx.compose.material.icons.outlined.DirectionsRailway
+import androidx.compose.material.icons.outlined.GridOn
+import androidx.compose.material.icons.outlined.Height
+import androidx.compose.material.icons.outlined.Umbrella
+import androidx.compose.material.icons.outlined.Air
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Masks
+import androidx.compose.material.icons.outlined.Router
+import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -114,18 +123,63 @@ private val credits = listOf(
     ),
     Credit(
         Icons.Outlined.SatelliteAlt, "Beeldmateriaal Nederland · PDOK",
-        "Aerial photos of the Netherlands, CC BY 4.0.",
+        "Aerial photos of the Netherlands, this year's and earlier, CC BY 4.0.",
         "https://www.beeldmateriaal.nl",
     ),
     Credit(
         Icons.Outlined.Terrain, "Terrain Tiles · Mapzen",
-        "Elevation for terrain shading, from the Terrain Tiles open dataset on AWS.",
-        "https://registry.opendata.aws/terrain-tiles/",
+        "Elevation for terrain shading and contour lines, from the Terrain Tiles open dataset on AWS. Includes 3DEP, SRTM, GMTED2010, ETOPO1, EU-DEM and other sources; see their attribution.",
+        "https://github.com/tilezen/joerd/blob/master/docs/attribution.md",
     ),
     Credit(
         Icons.Outlined.Hiking, "Waymarked Trails",
-        "Hiking and cycling routes, © Sarah Hoffmann, CC BY-SA 3.0.",
+        "Hiking, cycling and mountain biking routes, © Sarah Hoffmann, CC BY-SA 3.0.",
         "https://waymarkedtrails.org",
+    ),
+    Credit(
+        Icons.Outlined.DirectionsRailway, "OpenRailwayMap",
+        "The rail network, CC BY-SA 2.0.",
+        "https://www.openrailwaymap.org",
+    ),
+    Credit(
+        Icons.Outlined.Umbrella, "RainViewer",
+        "Rain radar of the last two hours.",
+        "https://www.rainviewer.com",
+    ),
+    Credit(
+        Icons.Outlined.Cloud, "© EUMETSAT",
+        "Cloud, satellite and lightning pictures from Meteosat Third Generation, via EUMETView.",
+        "https://view.eumetsat.int",
+    ),
+    Credit(
+        Icons.Outlined.Air, "Open-Meteo",
+        "Wind, cloud and storm forecasts from national weather services' models, CC BY 4.0.",
+        "https://open-meteo.com",
+    ),
+    Credit(
+        Icons.Outlined.Masks, "Copernicus Atmosphere Monitoring Service",
+        "Air quality, UV, CO₂ and methane forecasts (CAMS), drawn by ECMWF's charts service, CC BY 4.0. Generated using Copernicus Atmosphere Monitoring Service information; neither the European Commission nor ECMWF is responsible for any use of it.",
+        "https://atmosphere.copernicus.eu",
+    ),
+    Credit(
+        Icons.Outlined.Sensors, "Luchtmeetnet",
+        "Air quality measured at stations in the Netherlands, by RIVM and the provinces.",
+        "https://www.luchtmeetnet.nl",
+    ),
+    Credit(
+        Icons.Outlined.Router, "Sensor.Community",
+        "Particulate matter measured by people's own sensors, ODbL.",
+        "https://sensor.community",
+    ),
+    Credit(
+        Icons.Outlined.Height, "AHN · PDOK",
+        "Elevation of the Netherlands (Actueel Hoogtebestand Nederland), CC0.",
+        "https://www.ahn.nl",
+    ),
+    Credit(
+        Icons.Outlined.GridOn, "Kadaster · PDOK",
+        "Parcels of the Netherlands (Kadastrale Kaart), CC0.",
+        "https://www.kadaster.nl",
     ),
     Credit(
         Icons.Outlined.Subway, "VersaTiles",
@@ -149,7 +203,7 @@ private val credits = listOf(
     ),
     Credit(
         Icons.Outlined.DirectionsBus, "Transitous",
-        "Public transport, departures and search. See the data sources and their licenses.",
+        "Public transport, departures, search and bus routes on the map. See the data sources and their licenses.",
         "https://transitous.org/sources/",
     ),
     Credit(
@@ -159,12 +213,12 @@ private val credits = listOf(
     ),
     Credit(
         Icons.Outlined.Schedule, "Nominatim · Overpass API",
-        "Opening hours, phone numbers and websites from OpenStreetMap, and kinds of places nearby.",
+        "Opening hours, phone numbers and websites from OpenStreetMap, kinds of places nearby, and AED and bike repair pins.",
         "https://nominatim.org",
     ),
     Credit(
         Icons.Outlined.MenuBook, "Wikipedia · Wikimedia Commons",
-        "Descriptions and photos of places. Text under CC BY-SA; photos under their own licenses.",
+        "Descriptions and photos of places, and articles on the map. Text under CC BY-SA; photos under their own licenses.",
         "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use",
     ),
 )
