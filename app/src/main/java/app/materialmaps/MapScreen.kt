@@ -361,6 +361,8 @@ fun MapScreen(
     val routeAhead = remember { RouteAhead() }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
     var speedLimits by remember { mutableStateOf<SpeedLimits?>(null) }
+    /** The latest GPS speed while navigating, in m/s; null when the GPS doesn't say. */
+    var liveSpeed by remember { mutableStateOf<Float?>(null) }
     // While navigating: the latest fix, kept coming in the background too (see NavigationService).
     var navLocation by remember { mutableStateOf<Location?>(null) }
     var passedStops by remember { mutableStateOf(emptySet<Place>()) }
@@ -743,6 +745,7 @@ fun MapScreen(
 
     fun stopNavigation() {
         navigating = false
+        liveSpeed = null
         overview = false
         progress = null
         voice.stop()
@@ -1590,6 +1593,8 @@ fun MapScreen(
                 }
                 // Smoothed, so one odd GPS reading doesn't make the map jump.
                 if (here.hasSpeed()) speed += (here.speed - speed) * 0.3f
+                // The speedometer shows each reading as it is, like a car's.
+                liveSpeed = if (here.hasSpeed()) here.speed else null
                 // Only show the road ahead. While following, the camera listener does this every
                 // frame; otherwise the latest fix will do.
                 if (locationComponent()?.cameraMode != CameraMode.TRACKING_GPS) {
@@ -1877,7 +1882,11 @@ fun MapScreen(
                     // Like a car navigation app: see the whole route, then jump back to the driving view.
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            progress?.let { p -> speedLimits?.at(p.segment) }?.let { SpeedLimitSign(it) }
+                            val limit = progress?.let { p -> speedLimits?.at(p.segment) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                limit?.let { SpeedLimitSign(it) }
+                                liveSpeed?.let { Speedometer(it, limit) }
+                            }
                             AnimatedVisibility(
                                 visible = !following,
                                 enter = fadeIn() + scaleIn(),

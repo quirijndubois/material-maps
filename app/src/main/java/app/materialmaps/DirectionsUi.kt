@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -188,6 +189,34 @@ fun SpeedLimitSign(kmh: Int, modifier: Modifier = Modifier) {
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(value.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * How fast the user is going, in the units they picked, next to the speed limit sign. It turns
+ * red when they're clearly over [limitKmh].
+ */
+@Composable
+fun Speedometer(metersPerSecond: Float, limitKmh: Int?, modifier: Modifier = Modifier) {
+    val kmh = metersPerSecond * 3.6f
+    val imperial = distanceUnits == Units.Imperial
+    val value = (if (imperial) kmh / 1.609344f else kmh).roundToInt()
+    val over = limitKmh != null && kmh > limitKmh + 3
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = if (over) colors.errorContainer else colors.surfaceContainerHigh,
+        contentColor = if (over) colors.onErrorContainer else colors.onSurface,
+        shadowElevation = 4.dp,
+        modifier = modifier.semantics { contentDescription = "Speed $value ${if (imperial) "miles" else "kilometers"} per hour" },
+    ) {
+        Column(
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp).widthIn(min = 40.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(value.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(if (imperial) "mph" else "km/h", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
