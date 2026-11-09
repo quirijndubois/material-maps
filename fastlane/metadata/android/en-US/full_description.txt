@@ -26,9 +26,14 @@
 <li>Hand the destination off to another navigation app</li>
 </ul>
 
+<p><b>Offline</b></p>
+<ul>
+<li>Download countries and provinces for maps and turn-by-turn directions without a connection</li>
+</ul>
+
 <p><b>Departures</b></p>
 <ul>
 <li>Live departure boards for every stop and station, with a tab per kind of transport</li>
 </ul>
 
-<p>Data and services: map tiles from OpenFreeMap, routing by Valhalla on the FOSSGIS server, public transport from Transitous (MOTIS), search fallback from Photon by komoot, satellite photos from Sentinel-2 cloudless by EOX, with aerial photos of the Netherlands from Beeldmateriaal Nederland (PDOK), place details and pins from Nominatim and the Overpass API, bus routes from Transitous, descriptions from Wikipedia, elevation from Terrain Tiles and AHN (PDOK), parcels from the Kadaster (PDOK), rain radar from RainViewer, clouds and lightning © EUMETSAT, weather forecasts from Open-Meteo, air quality forecasts from the Copernicus Atmosphere Monitoring Service (drawn by ECMWF), measured air quality from Luchtmeetnet and Sensor.Community, and overlays from Waymarked Trails, OpenRailwayMap, OpenSnowMap, OpenSeaMap and VersaTiles. Map data © OpenStreetMap contributors.</p>
+<p>Data and services: map tiles from OpenFreeMap, routing by Valhalla on the FOSSGIS server, public transport from Transitous (MOTIS), search fallback from Photon by komoot, satellite photos from Sentinel-2 cloudless by EOX, with aerial photos of the Netherlands from Beeldmateriaal Nederland (PDOK), place details and pins from Nominatim and the Overpass API, bus routes from Transitous, offline directions by BRouter with regions by Geofabrik, descriptions from Wikipedia, elevation from Terrain Tiles and AHN (PDOK), parcels from the Kadaster (PDOK), rain radar from RainViewer, clouds and lightning © EUMETSAT, weather forecasts from Open-Meteo, air quality forecasts from the Copernicus Atmosphere Monitoring Service (drawn by ECMWF), measured air quality from Luchtmeetnet and Sensor.Community, and overlays from Waymarked Trails, OpenRailwayMap, OpenSnowMap, OpenSeaMap and VersaTiles. Map data © OpenStreetMap contributors.</p>

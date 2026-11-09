@@ -31,6 +31,11 @@ Search places, get driving, cycling, walking and public transport directions, fo
 - **Public transport:** journeys with line badges in the operators' own colours, platforms, live delays and cancellations, and a full timeline for each journey (where to board, how many stops, where to get off, walking parts). You can choose *leave now*, *depart at* or *arrive by*, and load later connections. On the map, rides are drawn in the line colours and walks as dots.
 - **Open in another app** passes the destination to Google Maps, Organic Maps, OsmAnd and the like.
 
+### Offline maps
+- Download a continent's country, a country or a province from Settings › Offline maps: browse the world or search by name. Each region comes with its map and its routing data.
+- Without a connection, the map still works there, and so do driving, cycling and walking directions with turn-by-turn navigation, worked out on the phone with [BRouter](https://github.com/abrensch/brouter). Offline instructions are in English.
+- Downloads carry on in the background, and pick up where they stopped.
+
 ### Departures
 - Every stop and station shows live departures: line, destination, platform, "in 4 min", delays (with the planned time struck through) and cancellations.
 - A tab for each kind of transport that stops there (train, metro, tram, bus, ferry).
@@ -84,6 +89,9 @@ Kotlin, Jetpack Compose, Material 3 and the MapLibre Android SDK. There's no oth
 | `Layers.kt`, `AerialTiles.kt` | Satellite photos, terrain and the other map overlays |
 | `ContourTiles.kt` | Contour lines, traced on the phone from elevation tiles and served to MapLibre as vector tiles |
 | `AreaOverlays.kt` | Overlays looked up for the area in view: place pins, bus routes, and the rain radar |
+| `Regions.kt`, `OfflineMapsUi.kt`, `OfflineMaps.kt` | Regions to download (by Geofabrik), their downloads, and the offline maps page |
+| `OfflineRouting.kt` | Directions on the phone with BRouter, and falling back to it without a connection |
+| `brouter/` | BRouter's routing engine (v1.7.10, MIT), kept as it is since it isn't published as a library |
 | `Weather.kt` | Satellite pictures, CAMS air quality, weather forecasts drawn on the phone from a grid of points, and measured air quality |
 | `Loading.kt` | Tracks what the overlays are loading, for the indicator on the map |
 
@@ -97,6 +105,7 @@ All of these are free to use, and most are community-run. Please be kind to them
 | Driving, cycling and walking routes | [Valhalla](https://github.com/valhalla/valhalla) on the [FOSSGIS](https://www.fossgis.de) server |
 | Public transport, departures, search and bus routes | [Transitous](https://transitous.org) ([MOTIS](https://github.com/motis-project/motis)), with Dutch data from [OpenOV](https://openov.nl) |
 | Search fallback | [Photon](https://photon.komoot.io) by komoot |
+| Offline directions | [BRouter](https://brouter.de) routing engine and routing data; regions by [Geofabrik](https://download.geofabrik.de) |
 | Terrain shading and contour lines | [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) on AWS ([sources](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)) |
 | Trail, rail, ski and sea overlays | [Waymarked Trails](https://waymarkedtrails.org) (CC BY-SA 3.0), [OpenRailwayMap](https://www.openrailwaymap.org) (CC BY-SA 2.0), [OpenSnowMap](https://www.opensnowmap.org) and [OpenSeaMap](https://www.openseamap.org) (CC BY-SA 2.0), and [VersaTiles](https://versatiles.org) for city-wide metro and tram lines |
 | Rain radar | [RainViewer](https://www.rainviewer.com) |

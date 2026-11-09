@@ -2,6 +2,10 @@
 
 package app.materialmaps
 
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.DownloadForOffline
+
 import android.text.format.Formatter
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,9 +59,9 @@ fun SettingsSheet(
     shortcuts: Map<Shortcut, Place>,
     onSetShortcut: (Shortcut) -> Unit,
     onClearShortcut: (Shortcut) -> Unit,
-    offlineAreas: List<OfflineArea>,
-    onDownloadArea: () -> Unit,
-    onDeleteArea: (OfflineArea) -> Unit,
+    /** What's downloaded, in a few words, for the way to [onOpenOfflineMaps]. */
+    offlineSummary: String,
+    onOpenOfflineMaps: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
     onDismiss: () -> Unit,
@@ -188,36 +192,14 @@ fun SettingsSheet(
 
             HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
             Heading("Offline maps")
-            Text(
-                "Keeps the map of an area on this phone. Search and directions still need a connection.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 24.dp),
+            ListItem(
+                headlineContent = { Text("Download regions") },
+                supportingContent = { Text(offlineSummary) },
+                leadingContent = { Icon(Icons.Outlined.DownloadForOffline, contentDescription = null) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier.padding(horizontal = 8.dp).clickable(onClick = onOpenOfflineMaps),
             )
-            offlineAreas.forEach { area ->
-                ListItem(
-                    headlineContent = { Text(area.name) },
-                    supportingContent = {
-                        Column {
-                            Text(
-                                area.error ?: when {
-                                    area.complete -> Formatter.formatShortFileSize(LocalContext.current, area.bytes)
-                                    else -> "Downloading… ${(area.progress * 100).toInt()}%"
-                                }
-                            )
-                            if (!area.complete && area.error == null) {
-                                LinearProgressIndicator(progress = { area.progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
-                            }
-                        }
-                    },
-                    trailingContent = { TextButton(onClick = { onDeleteArea(area) }) { Text("Delete") } },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
-            }
-            TextButton(onClick = onDownloadArea, modifier = Modifier.padding(horizontal = 12.dp)) {
-                Text("Download the area on screen")
-            }
 
             if (onClearHistory != null) {
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp))

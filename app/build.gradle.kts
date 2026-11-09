@@ -86,4 +86,6 @@ dependencies {
     // MapLibre's HTTP client, used directly to tidy up aerial photo tiles (AerialTiles.kt).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.mikepenz:aboutlibraries-core:12.2.4")
+    // Routing on the phone, from downloaded routing data, for directions without a connection.
+    implementation(project(":brouter"))
 }

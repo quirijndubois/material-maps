@@ -23,6 +23,8 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -51,6 +53,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -140,6 +151,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraPosition
@@ -206,6 +218,13 @@ private const val DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 
 private const val PIN_SOURCE = "selected-place"
 private const val PIN_LAYER = "selected-place-pin"
+private const val PIN_IMAGE = "selected-place"
+private const val PIN_STEM_LAYER = "selected-place-stem"
+private const val PIN_STEM_IMAGE = "selected-place-stem"
+/** How long the map takes to show a symbol, fading it in, before the pin drawn over it goes. */
+private const val PIN_HANDOVER = 350L
+/** How long the map takes to hide or show a place's own icon, which the pin covers meanwhile. */
+private const val PIN_SETTLE = 160L
 private const val MEASURE_LINE_SOURCE = "measure-line"
 private const val MEASURE_LINE_LAYER = "measure-line-line"
 private const val MEASURE_POINTS_SOURCE = "measure-points"
@@ -362,7 +381,12 @@ fun MapScreen(
     var detailsLoading by remember { mutableStateOf(false) }
     var savedStopDepartures by remember { mutableStateOf(emptyMap<Place, List<Departure>?>()) }
     val offline = remember { OfflineMaps(context) }
-    LaunchedEffect(Unit) { offline.refresh() }
+    LaunchedEffect(Unit) {
+        offline.refresh()
+        OfflineRegions.load(context)
+        OfflineTiles.init(context)
+    }
+    var showOfflineMaps by rememberSaveable { mutableStateOf(false) }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val ok = runCatching {
@@ -439,6 +463,17 @@ fun MapScreen(
     var poiLayers by remember { mutableStateOf(emptyArray<String>()) }
     // What the map shows once it has settled, for the overlays looked up for the view.
     var viewArea by remember { mutableStateOf<Pair<LatLngBounds, Double>?>(null) }
+    // The map only places its icons anew (taking away the one the pin stands for) once it's
+    // still, so the pin waits for any move to the place to end.
+    var cameraMoving by remember { mutableStateOf(false) }
+    // The selected place's pin: which place, how far it's grown out of the place's icon and
+    // risen onto its stem, and a count of camera moves, to place it again on each.
+    var pinPlace by remember { mutableStateOf<Place?>(null) }
+    // Whether the pin stands on the map itself, rather than drawn over it.
+    var pinOnMap by remember { mutableStateOf(false) }
+    val pinGrow = remember { androidx.compose.animation.core.Animatable(0f) }
+    val pinRise = remember { androidx.compose.animation.core.Animatable(0f) }
+    var cameraFrame by remember { mutableIntStateOf(0) }
     var areaPins by remember { mutableStateOf(emptyList<AreaPin>()) }
     // Radar and satellite pictures of the last hours, and the time picked from them (null
     // for the latest).
@@ -920,24 +955,6 @@ fun MapScreen(
         Toast.makeText(context, "Going via ${place.name}", Toast.LENGTH_SHORT).show()
     }
 
-    fun downloadVisibleArea() {
-        val m = map ?: return
-        val bounds = m.projection.visibleRegion.latLngBounds
-        val zoom = m.cameraPosition.zoom
-        val center = bounds.center
-        scope.launch {
-            val near = runCatching { Geocoder.reverse(center.latitude, center.longitude) }.getOrNull()
-            val town = near?.subtitle?.split(", ")?.lastOrNull { it.isNotBlank() && it.none(Char::isDigit) }
-            offline.download(
-                name = town ?: near?.name ?: "Map area",
-                styleUrl = settings.mapStyle.url,
-                bounds = bounds,
-                minZoom = (zoom - 3).coerceIn(0.0, 12.0),
-                pixelRatio = context.resources.displayMetrics.density,
-            )
-        }
-    }
-
     fun startDirections(place: Place) {
         directionsFrom = null
         stops = emptyList()
@@ -1101,6 +1118,8 @@ fun MapScreen(
                         layer.setProperties(PropertyFactory.textFont(fonts.map { if (it == "Noto Sans Italic") "Noto Sans Regular" else it.replace(" Italic", "") }.toTypedArray()))
                     }
                 }
+                // Place icons in the app's own style.
+                PoiIcons.apply(loaded, context.resources.displayMetrics.density)
                 // Routes go above roads and buildings but below the labels, which these styles
                 // keep at the end (some symbol layers, like one-way arrows, come much earlier).
                 // The pin goes on top of everything.
@@ -1134,7 +1153,6 @@ fun MapScreen(
                 loaded.addSource(GeoJsonSource(TRIP_LINE_SOURCE))
                 loaded.addSource(GeoJsonSource(TRIP_STOPS_SOURCE))
                 loaded.addSource(GeoJsonSource(TRIP_VEHICLE_SOURCE))
-                loaded.addSource(GeoJsonSource(PIN_SOURCE))
                 loaded.addSource(GeoJsonSource(MEASURE_LINE_SOURCE))
                 loaded.addSource(GeoJsonSource(MEASURE_POINTS_SOURCE))
                 loaded.addSource(GeoJsonSource(SAVED_SOURCE))
@@ -1254,12 +1272,23 @@ fun MapScreen(
                         PropertyFactory.symbolSortKey(Expression.get("order")),
                     )
                 )
+                // The selected place's pin once it stands, so it moves exactly with the map
+                // (see SelectedPin): its stem under its head.
+                loaded.addSource(GeoJsonSource(PIN_SOURCE))
                 loaded.addLayer(
-                    CircleLayer(PIN_LAYER, PIN_SOURCE).withProperties(
-                        PropertyFactory.circleRadius(9f),
-                        PropertyFactory.circleColor(accent),
-                        PropertyFactory.circleStrokeWidth(3f),
-                        PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    SymbolLayer(PIN_STEM_LAYER, PIN_SOURCE).withProperties(
+                        PropertyFactory.iconImage(PIN_STEM_IMAGE),
+                        PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true),
+                    )
+                )
+                loaded.addLayer(
+                    SymbolLayer(PIN_LAYER, PIN_SOURCE).withProperties(
+                        PropertyFactory.iconImage(PIN_IMAGE),
+                        PropertyFactory.iconTranslate(arrayOf(0f, -PoiIcons.PIN_HEIGHT)),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true),
                     )
                 )
                 loaded.addLayer(
@@ -1296,6 +1325,7 @@ fun MapScreen(
             // Open where the map was last left, so there's no world view while waiting for a fix.
             context.lastCamera()?.let { m.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
             m.addOnCameraIdleListener {
+                cameraMoving = false
                 context.saveCamera(m.cameraPosition)
                 viewArea = m.projection.visibleRegion.latLngBounds to m.cameraPosition.zoom
             }
@@ -1321,12 +1351,14 @@ fun MapScreen(
             ))
             // Moving the map by hand leaves the route overview; its button then shows it again.
             m.addOnCameraMoveStartedListener { reason ->
+                cameraMoving = true
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                     overview = false
                     stopTurning(byUser = true)
                 }
             }
             m.addOnCameraMoveListener {
+                cameraFrame++
                 // Following, the camera sits on the arrow as it glides, so the route can be cut
                 // right where the arrow is on every frame.
                 if (navigating && transitRoute == null && locationComponent()?.cameraMode == routeCameraMode()) {
@@ -1714,16 +1746,59 @@ fun MapScreen(
         }
     }
 
-    // Move the pin to the selected place.
-    LaunchedEffect(selected, style) {
-        val source = style?.getSourceAs<GeoJsonSource>(PIN_SOURCE) ?: return@LaunchedEffect
+    // The pin on the selected place, drawn over the map (see SelectedPin) so it shows from
+    // the first frame and moves smoothly. For a place with an icon on the map, it grows out of
+    // that icon right away, then once the map is done moving to the place, rises onto its
+    // stem; closed, it goes back down and into the icon. Only a change of place does this,
+    // not more details about it.
+    LaunchedEffect(selected?.let { Triple(it.name, it.lat, it.lon) }, style) {
+        val s = style ?: return@LaunchedEffect
         val place = selected
-        if (place == null) {
-            source.setGeoJson(FeatureCollection.fromFeatures(emptyList<Feature>()))
-        } else {
-            source.setGeoJson(Point.fromLngLat(place.lon, place.lat))
-            lastShownPlace = place
+        val old = pinPlace
+        // Any animation is drawn over the map: the pin on the map goes.
+        fun offMap() {
+            pinOnMap = false
+            s.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(emptyList<Feature>()))
         }
+        offMap()
+        if (place == null) {
+            if (old != null) {
+                // Back down and into its icon, which shows again underneath.
+                PoiIcons.hide(s, null)
+                pinRise.animateTo(0f, tween(200, easing = FastOutSlowInEasing))
+                if (PoiIcons.forPlace(old) != null) {
+                    pinGrow.animateTo(0f, tween(160, easing = FastOutSlowInEasing))
+                    // Covering the icon until the map has it back.
+                    delay(PIN_SETTLE)
+                }
+            }
+            pinPlace = null
+            return@LaunchedEffect
+        }
+        lastShownPlace = place
+        // A pin for another place goes, and its icon comes back.
+        if (old != null) PoiIcons.hide(s, null)
+        val fromIcon = PoiIcons.forPlace(place) != null
+        pinGrow.snapTo(0f)
+        pinRise.snapTo(0f)
+        pinPlace = place
+        if (fromIcon) pinGrow.animateTo(1f, tween(180, easing = FastOutSlowInEasing))
+        // The map only takes the place's own icon away (from under the head) once it's still.
+        delay(80)
+        snapshotFlow { cameraMoving }.first { !it }
+        if (fromIcon) {
+            PoiIcons.hide(s, place)
+            delay(PIN_SETTLE)
+        }
+        pinRise.animateTo(1f, tween(260, easing = FastOutSlowInEasing))
+        // Standing: onto the map itself, so it moves exactly with it. The one drawn over it
+        // stays while the map fades its own in.
+        val density = context.resources.displayMetrics.density
+        s.addImage(PIN_IMAGE, PoiIcons.pinHead(place, accent, density))
+        s.addImage(PIN_STEM_IMAGE, PoiIcons.pinStem(place, accent, density))
+        s.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(Point.fromLngLat(place.lon, place.lat))
+        delay(PIN_HANDOVER)
+        pinOnMap = true
     }
 
     // Search while typing. Requests aren't cancelled when the next key comes in (Photon
@@ -1826,7 +1901,8 @@ fun MapScreen(
             } else {
                 // Stops that are already behind (reached while navigating) aren't routed to again.
                 val ahead = stops.filterNot { it in passedStops }
-                val found = Valhalla.route(
+                val found = Directions.route(
+                    context,
                     LatLng(from.latitude, from.longitude),
                     ahead.map { LatLng(it.lat, it.lon) },
                     LatLng(target.lat, target.lon),
@@ -1841,7 +1917,9 @@ fun MapScreen(
         } catch (e: RouteException) {
             routeError = e.message
         } catch (e: Exception) {
-            routeError = "Couldn't reach the routing service. Check your connection."
+            // Offline maps only help directions by road and path: public transport needs a connection.
+            routeError = if (travelMode == TravelMode.Transit) "Couldn't reach the routing service. Check your connection."
+            else "Couldn't reach the routing service. Check your connection, or download this area in Settings › Offline maps."
         } finally {
             routing = false
         }
@@ -2287,6 +2365,12 @@ fun MapScreen(
     CompositionLocalProvider(LocalListMaxHeight provides listMax) {
         Box(Modifier.fillMaxSize()) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+            pinPlace?.takeIf { !pinOnMap }?.let { place ->
+                // Read to place it again as the map moves.
+                cameraFrame
+                val at = map?.projection?.toScreenLocation(LatLng(place.lat, place.lon))
+                if (at != null) SelectedPin(place, pinGrow.value, pinRise.value, at, Color(accent))
+            }
             val vehicleModel = settings.vehicle.model
             if (navigating && !walking && vehicleModel != null) {
                 // Placed over the user every frame by the view itself.
@@ -2376,17 +2460,21 @@ fun MapScreen(
                         shortcuts = shortcuts,
                         onSetShortcut = { picking = if (it == Shortcut.Home) PickFor.Home else PickFor.Work },
                         onClearShortcut = { shortcuts = Shortcuts.set(context, it, null) },
-                        offlineAreas = offline.areas,
-                        onDownloadArea = {
-                            showSettings = false
-                            downloadVisibleArea()
-                            Toast.makeText(context, "Downloading the map of this area", Toast.LENGTH_SHORT).show()
+                        offlineSummary = OfflineRegions.saved.collectAsState().value.let { saved ->
+                            when (saved.size) {
+                                0 -> "Maps and directions without a connection"
+                                1 -> saved[0].name
+                                else -> "${saved.size} regions: " + saved.joinToString(", ") { it.name }
+                            }
                         },
-                        onDeleteArea = { offline.delete(it.id) },
+                        onOpenOfflineMaps = { showOfflineMaps = true },
                         onExport = { exportLauncher.launch("saved-places.geojson") },
                         onImport = { importLauncher.launch(arrayOf("application/geo+json", "application/json", "*/*")) },
                         onDismiss = { showSettings = false },
                     )
+                }
+                if (showOfflineMaps) {
+                    OfflineMapsPage(offline, settings.mapStyle.url, onBack = { showOfflineMaps = false })
                 }
                 picking?.let { purpose ->
                     PlacePicker(
@@ -2978,6 +3066,18 @@ private fun PlaceCard(
                 .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 20.dp)
         ) {
             Row(verticalAlignment = Alignment.Top) {
+                // The kind of place, as on the map.
+                PoiIcons.forPlace(place)?.let { badge ->
+                    Box(
+                        Modifier
+                            .padding(top = 12.dp, end = 14.dp)
+                            .size(44.dp)
+                            .background(Color(badge.color), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(badge.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
+                }
                 Column(
                     Modifier
                         .weight(1f)
@@ -3441,7 +3541,7 @@ private fun poiPlace(feature: Feature, tap: LatLng): Place? {
             name, lat, lon,
             setOf(if (subclass in setOf("subway", "subway_entrance")) TransitKind.Metro else if (subclass == "tram_stop") TransitKind.Tram else TransitKind.Train),
         )
-        else -> Place(name = name, subtitle = "", lat = lat, lon = lon, type = subclass ?: kind)
+        else -> Place(name = name, subtitle = "", lat = lat, lon = lon, type = subclass ?: kind, poiClass = kind)
     }
 }
 
@@ -3501,4 +3601,51 @@ private fun Route.legFeatures(from: Int = 0): List<Feature> = legs(from).map { (
 private fun Place.toLocation() = Location("place").also {
     it.latitude = lat
     it.longitude = lon
+}
+
+/**
+ * The pin on the selected place, with its foot at [at] on the map: a round head in its kind's
+ * color with its icon (or the [accent] with a dot), on a thin stem. [grow] from the place's
+ * icon to the head, and [rise] up onto the stem, each from 0 to 1. A place without an icon on
+ * the map has nothing to grow out of: its pin drops in instead, as it rises.
+ */
+@Composable
+private fun SelectedPin(place: Place, grow: Float, rise: Float, at: PointF, accent: Color) {
+    val badge = remember(place) { PoiIcons.forPlace(place) }
+    val color = badge?.let { Color(it.color) } ?: accent
+    val density = LocalDensity.current
+    val fromIcon = badge != null
+    val head = PoiIcons.PIN_HEAD.dp
+    val start = 24f / PoiIcons.PIN_HEAD
+    val scale = if (fromIcon) start + (1 - start) * grow else 1f
+    val alpha = if (fromIcon) 1f else rise
+    val lift = if (fromIcon) PoiIcons.PIN_HEIGHT.dp * rise else PoiIcons.PIN_HEIGHT.dp + 14.dp * (1 - rise)
+    val stem = if (fromIcon) 16.dp * rise else 16.dp
+    Box(Modifier.offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }) {
+        if (stem > 0.dp) {
+            Box(
+                Modifier
+                    .offset { with(density) { IntOffset((-1.5).dp.roundToPx(), -stem.roundToPx()) } }
+                    .size(3.dp, stem)
+                    .graphicsLayer { this.alpha = alpha }
+                    .background(color, RoundedCornerShape(1.5.dp))
+            )
+        }
+        Box(
+            Modifier
+                .offset { with(density) { IntOffset(-(head / 2).roundToPx(), -(lift + head / 2).roundToPx()) } }
+                .size(head)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    this.alpha = alpha
+                }
+                .shadow(3.dp, CircleShape)
+                .background(color, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (badge != null) Icon(badge.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+            else Box(Modifier.size(10.dp).background(Color.White, CircleShape))
+        }
+    }
 }

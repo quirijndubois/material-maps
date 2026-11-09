@@ -96,7 +96,12 @@ object Geocoder {
             null
         }
         photon?.cancel()
-        if (fast == null && slow == null) throw IOException("Search failed")
+        if (fast == null && slow == null) {
+            // No connection: what the map data on the phone has.
+            val offline = if (nearLat != null && nearLon != null) OfflineSearch.search(q, nearLat, nearLon, zoom) else emptyList()
+            if (offline.isEmpty()) throw IOException("Search failed")
+            return offline
+        }
         val places = rank(fast.orEmpty() + slow.orEmpty())
         synchronized(cache) { cache[cacheKey(query, nearLat, nearLon)] = places }
         return places

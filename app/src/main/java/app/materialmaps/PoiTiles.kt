@@ -104,8 +104,12 @@ object PoiTiles {
         synchronized(cache) { cache[id] }?.let { return it }
         val x = (id shr 32).toInt()
         val y = id.toInt()
-        val url = urlTemplate().replace("{z}", "$ZOOM").replace("{x}", "$x").replace("{y}", "$y")
-        val bytes = httpGetBytes(url)
+        val bytes = try {
+            httpGetBytes(urlTemplate().replace("{z}", "$ZOOM").replace("{x}", "$x").replace("{y}", "$y"))
+        } catch (e: java.io.IOException) {
+            // Without a connection, the tile as kept with the offline maps, if it is.
+            withContext(Dispatchers.IO) { OfflineTiles.read(ZOOM, x, y) } ?: throw e
+        }
         val pois = withContext(Dispatchers.Default) { decode(unzip(bytes), x, y) }
         synchronized(cache) { cache[id] = pois }
         return pois

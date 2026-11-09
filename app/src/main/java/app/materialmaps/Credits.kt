@@ -41,6 +41,8 @@ import androidx.compose.material.icons.outlined.DirectionsRailway
 import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Height
 import androidx.compose.material.icons.outlined.Umbrella
+import androidx.compose.material.icons.outlined.Route
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Air
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Masks
@@ -200,6 +202,16 @@ private val credits = listOf(
         Icons.AutoMirrored.Outlined.DirectionsWalk, "Valhalla · FOSSGIS",
         "Driving, cycling and walking routes, served by FOSSGIS e.V.",
         "https://valhalla1.openstreetmap.de",
+    ),
+    Credit(
+        Icons.Outlined.Route, "BRouter",
+        "Directions without a connection: its routing engine (MIT) and routing data from brouter.de.",
+        "https://brouter.de",
+    ),
+    Credit(
+        Icons.Outlined.Public, "Geofabrik",
+        "The regions to download offline maps by.",
+        "https://download.geofabrik.de",
     ),
     Credit(
         Icons.Outlined.DirectionsBus, "Transitous",

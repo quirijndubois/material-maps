@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "MaterialMaps"
 include(":app")
+include(":brouter")

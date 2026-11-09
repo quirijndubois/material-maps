@@ -20,6 +20,8 @@ data class Place(
      * name is in and how the map ranks it. Used to put notable places first among results.
      */
     val prominence: Double = 0.0,
+    /** The map's own kind of place (an OpenMapTiles class like `shop`), for places tapped on it. */
+    val poiClass: String? = null,
 )
 
 /**
