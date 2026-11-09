@@ -1,0 +1,8 @@
+• Search for kinds of places: "supermarket" or "apotheek" shows every one nearby
+• Search results in a draggable sheet, and search along your route
+• Stops get their own route colours
+• Layers: satellite photos, terrain, labels, rail, metro, tram and trail overlays
+• Smoother gestures and compass following
+• Speedometer next to the speed limit, and a navigation arrow that follows the road
+• Navigation keeps going in picture-in-picture
+• Live departure countdowns
