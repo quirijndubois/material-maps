@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.PinDrop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -41,7 +42,7 @@ import kotlinx.coroutines.delay
 
 /**
  * A full-screen search for picking one place, such as a stop on the way or Home. Before
- * anything is typed it offers saved and recent places.
+ * anything is typed it offers saved and recent places, and choosing on the map.
  */
 @Composable
 fun PlacePicker(
@@ -52,6 +53,8 @@ fun PlacePicker(
     onDismiss: () -> Unit,
     /** When set, "Your location" is offered first. */
     onPickMyLocation: (() -> Unit)? = null,
+    /** When set, "Choose on map" is offered too. */
+    onChooseOnMap: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf(emptyList<Place>()) }
@@ -103,6 +106,13 @@ fun PlacePicker(
                             headlineContent = { Text("Your location") },
                             leadingContent = { Icon(Icons.Filled.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                             modifier = Modifier.clickable(onClick = onPickMyLocation),
+                        )
+                    }
+                    if (onChooseOnMap != null && query.isBlank()) item {
+                        ListItem(
+                            headlineContent = { Text("Choose on map") },
+                            leadingContent = { Icon(Icons.Filled.PinDrop, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable(onClick = onChooseOnMap),
                         )
                     }
                     items(shown) { place -> PlaceRow(place, near, onClick = { onPick(place) }) }

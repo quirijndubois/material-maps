@@ -73,6 +73,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Directions
@@ -243,7 +244,7 @@ private val SIDE_PANEL_WIDTH = 400.dp
 /** How close the location button zooms in, unless already closer. */
 private const val FOLLOW_ZOOM = 16.0
 
-private enum class Panel { None, Place, List, Results, Route, Along, Navigation, Trip, Measure }
+private enum class Panel { None, Place, List, Results, Route, Along, Navigation, Trip, Measure, PickOnMap }
 
 /** What the place picker is choosing a place for. */
 private enum class PickFor { Stop, Home, Work, Origin, Destination }
@@ -332,6 +333,18 @@ fun MapScreen(
     var aim by remember { mutableStateOf<LatLng?>(null) }
     var lastMeasure by remember { mutableStateOf(emptyList<LatLng>()) }
     LaunchedEffect(measure) { measure?.let { lastMeasure = it } }
+    // Choosing a place for directions on the map: what it's for, and the address under the
+    // crosshair, looked up once the map stops moving.
+    var pickingOnMap by remember { mutableStateOf<PickFor?>(null) }
+    var lastPickingOnMap by remember { mutableStateOf(PickFor.Origin) }
+    var aimedPlace by remember { mutableStateOf<Place?>(null) }
+    LaunchedEffect(pickingOnMap) { pickingOnMap?.let { lastPickingOnMap = it } }
+    LaunchedEffect(pickingOnMap, aim) {
+        val at = aim?.takeIf { pickingOnMap != null } ?: return@LaunchedEffect
+        aimedPlace = null
+        delay(400)
+        aimedPlace = runCatching { Geocoder.reverse(at.latitude, at.longitude) }.getOrNull()?.copy(lat = at.latitude, lon = at.longitude)
+    }
     var wiki by remember { mutableStateOf<WikiSummary?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
     var savedStopDepartures by remember { mutableStateOf(emptyMap<Place, List<Departure>?>()) }
@@ -525,7 +538,12 @@ fun MapScreen(
             m.moveCamera(CameraUpdateFactory.newCameraPosition(camera.build()))
         }
         animator.doOnEnd {
-            if (turnAnimator.compareAndSet(animator, null) && flight == flights.get()) component.cameraMode = mode
+            // With the shortest transition MapLibre takes: by default it glides to the user for
+            // 750 ms, ignoring the compass meanwhile, and then snaps to where the phone points.
+            // Without one at all, it never hears the glide end and ignores the compass for good.
+            if (turnAnimator.compareAndSet(animator, null) && flight == flights.get()) {
+                component.setCameraMode(mode, 1, null, null, null, null)
+            }
         }
         turnAnimator.set(animator)
         animator.start()
@@ -659,6 +677,25 @@ fun MapScreen(
         selected = null
         measure = listOf(LatLng(from.lat, from.lon))
         aim = map?.projection?.fromScreenLocation(crosshair())
+    }
+
+    fun startPickingOnMap(purpose: PickFor) {
+        stopTracking()
+        pickingOnMap = purpose
+        aim = map?.projection?.fromScreenLocation(crosshair())
+    }
+
+    fun pickPlace(purpose: PickFor, place: Place) {
+        when (purpose) {
+            PickFor.Stop -> stops = stops + place
+            PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
+            PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
+            PickFor.Origin -> directionsFrom = place
+            PickFor.Destination -> {
+                directionsTo = place
+                lastDestination = place
+            }
+        }
     }
 
     fun closeList() {
@@ -998,6 +1035,13 @@ fun MapScreen(
 
     fun loadStyle(m: MapLibreMap, builder: Style.Builder) {
             m.setStyle(builder) { loaded ->
+                // Upright labels throughout: the styles set names of water, nature and areas in italics.
+                loaded.layers.filterIsInstance<SymbolLayer>().forEach { layer ->
+                    val fonts = (layer.textFont.value as? Array<*>)?.filterIsInstance<String>() ?: return@forEach
+                    if (fonts.any { "Italic" in it }) {
+                        layer.setProperties(PropertyFactory.textFont(fonts.map { if (it == "Noto Sans Italic") "Noto Sans Regular" else it.replace(" Italic", "") }.toTypedArray()))
+                    }
+                }
                 // Routes go above roads and buildings but below the labels, which these styles
                 // keep at the end (some symbol layers, like one-way arrows, come much earlier).
                 // The pin goes on top of everything.
@@ -1227,7 +1271,7 @@ fun MapScreen(
                 }
                 bearing = m.cameraPosition.bearing.toFloat()
                 tilt = m.cameraPosition.tilt.toFloat()
-                if (measure != null) aim = m.projection.fromScreenLocation(crosshair())
+                if (measure != null || pickingOnMap != null) aim = m.projection.fromScreenLocation(crosshair())
             }
             m.addOnMapClickListener { point ->
                 // A place found along the route: point it out in the list.
@@ -1253,6 +1297,16 @@ fun MapScreen(
                 // While measuring, a tap adds a point there.
                 measure?.let {
                     measure = it + point
+                    return@addOnMapClickListener true
+                }
+                // While choosing a place on the map, a tap brings that spot under the crosshair.
+                if (pickingOnMap != null) {
+                    val target = m.cameraPosition.target ?: return@addOnMapClickListener true
+                    val p = m.projection.toScreenLocation(point)
+                    val c = crosshair()
+                    val t = m.projection.toScreenLocation(target)
+                    val moved = m.projection.fromScreenLocation(PointF(t.x + p.x - c.x, t.y + p.y - c.y))
+                    m.animateCamera(CameraUpdateFactory.newLatLng(moved), 300)
                     return@addOnMapClickListener true
                 }
                 val p = m.projection.toScreenLocation(point)
@@ -1297,7 +1351,7 @@ fun MapScreen(
                 }
             }
             m.addOnMapLongClickListener { point ->
-                if (directionsTo != null || measure != null) return@addOnMapLongClickListener false
+                if (directionsTo != null || measure != null || pickingOnMap != null) return@addOnMapLongClickListener false
                 val dropped = Place(
                     name = "Dropped pin",
                     subtitle = Photon.formatCoordinates(point.latitude, point.longitude),
@@ -1938,9 +1992,10 @@ fun MapScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    BackHandler(enabled = !expanded && (showAlong || measure != null || openTrip != null || navigating || directionsTo != null || selected != null || openListId != null || resultsOnMap)) {
+    BackHandler(enabled = !expanded && (showAlong || pickingOnMap != null || measure != null || openTrip != null || navigating || directionsTo != null || selected != null || openListId != null || resultsOnMap)) {
         when {
             showAlong -> closeAlong()
+            pickingOnMap != null -> pickingOnMap = null
             measure != null -> measure = null
             openTrip != null -> openTrip = null
             navigating -> stopNavigation()
@@ -1991,7 +2046,7 @@ fun MapScreen(
                     liveSpeed?.let { Speedometer(it, progress?.let { p -> speedLimits?.at(p.segment) }, Modifier.align(Alignment.BottomStart).padding(6.dp)) }
                 }
             } else {
-                if (measure != null) {
+                if (measure != null || pickingOnMap != null) {
                     // Aim with the map; the crosshair stays put. Same spot as crosshair() works out.
                     Box(Modifier.fillMaxSize().padding(start = if (wide) SIDE_PANEL_WIDTH + 16.dp else 0.dp)) {
                         Icon(
@@ -2037,29 +2092,21 @@ fun MapScreen(
                 }
                 picking?.let { purpose ->
                     PlacePicker(
-                        title = when (purpose) {
-                            PickFor.Stop -> "Add a stop"
-                            PickFor.Home -> "Set home"
-                            PickFor.Work -> "Set work"
-                            PickFor.Origin -> "Choose starting point"
-                            PickFor.Destination -> "Choose destination"
-                        },
+                        title = pickTitle(purpose),
                         near = myLocation(),
                         suggestions = (shortcuts.values + lists.flatMap { it.places } + recents).distinctBy { it.name to it.lat },
                         onPick = { place ->
                             picking = null
-                            when (purpose) {
-                                PickFor.Stop -> stops = stops + place
-                                PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
-                                PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
-                                PickFor.Origin -> directionsFrom = place
-                                PickFor.Destination -> {
-                                    directionsTo = place
-                                    lastDestination = place
-                                }
-                            }
+                            pickPlace(purpose, place)
                         },
                         onDismiss = { picking = null },
+                        onChooseOnMap = when (purpose) {
+                            PickFor.Stop, PickFor.Origin, PickFor.Destination -> ({
+                                picking = null
+                                startPickingOnMap(purpose)
+                            })
+                            else -> null
+                        },
                         onPickMyLocation = when (purpose) {
                             PickFor.Origin -> ({ picking = null; directionsFrom = null })
                             PickFor.Destination -> myLocation()?.let { here ->
@@ -2176,6 +2223,7 @@ fun MapScreen(
                 // Place cards, routes, trips and the like.
                 val panelContent: @Composable () -> Unit = {
                     val panel = when {
+                        pickingOnMap != null -> Panel.PickOnMap
                         showAlong && directionsTo != null && travelMode != TravelMode.Transit -> Panel.Along
                         directionsTo != null && navigating -> Panel.Navigation
                         measure != null -> Panel.Measure
@@ -2205,6 +2253,21 @@ fun MapScreen(
                             .padding(top = 16.dp)
                             .animateContentSize()
                         when {
+                            target == Panel.PickOnMap -> PickOnMapPanel(
+                                title = pickTitle(pickingOnMap ?: lastPickingOnMap),
+                                place = aimedPlace,
+                                aim = aim,
+                                onDone = {
+                                    val purpose = pickingOnMap
+                                    val at = aim
+                                    if (purpose != null && at != null) {
+                                        pickingOnMap = null
+                                        pickPlace(purpose, aimedPlace ?: droppedPin(at))
+                                    }
+                                },
+                                onClose = { pickingOnMap = null },
+                                modifier = panelModifier,
+                            )
                             target == Panel.Measure -> MeasurePanel(
                                 points = measure ?: lastMeasure,
                                 aim = aim,
@@ -2677,6 +2740,58 @@ private fun PlaceCard(
                 }
             }
             departures?.invoke()
+        }
+    }
+}
+
+private fun pickTitle(purpose: PickFor) = when (purpose) {
+    PickFor.Stop -> "Add a stop"
+    PickFor.Home -> "Set home"
+    PickFor.Work -> "Set work"
+    PickFor.Origin -> "Choose starting point"
+    PickFor.Destination -> "Choose destination"
+}
+
+/** A place with no name, just where it is on the map. */
+private fun droppedPin(at: LatLng) =
+    Place("Dropped pin", Photon.formatCoordinates(at.latitude, at.longitude), at.latitude, at.longitude)
+
+/** Choosing a place by moving the map under the crosshair; [place] is its address, once known. */
+@Composable
+private fun PickOnMapPanel(
+    title: String,
+    place: Place?,
+    aim: LatLng?,
+    onDone: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
+        Column(Modifier.padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(top = 8.dp)) {
+                    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        place?.name ?: aim?.let { Photon.formatCoordinates(it.latitude, it.longitude) }.orEmpty(),
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        place?.subtitle?.takeIf { it.isNotBlank() } ?: "Move the map to aim the crosshair, or tap the map.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+            }
+            Button(onClick = onDone, enabled = aim != null, modifier = Modifier.padding(top = 12.dp)) {
+                Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Choose this place")
+            }
         }
     }
 }
