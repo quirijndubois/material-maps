@@ -89,7 +89,8 @@ object Overpass {
         var failure: Exception? = null
         for (server in SERVERS) {
             try {
-                return JSONObject(httpGet("$server?data=" + URLEncoder.encode(query, "UTF-8")))
+                // Busy servers can take half a minute; giving up sooner means never getting an answer.
+                return JSONObject(httpGet("$server?data=" + URLEncoder.encode(query, "UTF-8"), readTimeout = 45_000))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -107,11 +108,25 @@ object Overpass {
         return places(run(query), category)
     }
 
-    private fun places(answer: JSONObject, category: PlaceKind): List<Place> {
+    /**
+     * Places of any of [kinds] within [bounds], at most [limit] in all, named or not. Each
+     * comes with the [PlaceKind.key] and [PlaceKind.value] it was found by.
+     */
+    suspend fun findAny(kinds: List<PlaceKind>, bounds: LatLngBounds, limit: Int = 400): List<Place> {
+        val box = "${bounds.latitudeSouth},${bounds.longitudeWest},${bounds.latitudeNorth},${bounds.longitudeEast}"
+        val parts = kinds.joinToString("") { "nwr[\"${it.key}\"=\"${it.value}\"]($box);" }
+        val answer = run("[out:json][timeout:20];($parts);out center tags $limit;")
+        return places(answer) { tags -> kinds.firstOrNull { tags.optString(it.key) == it.value } }
+    }
+
+    private fun places(answer: JSONObject, category: PlaceKind): List<Place> = places(answer) { category }
+
+    private fun places(answer: JSONObject, kindOf: (JSONObject) -> PlaceKind?): List<Place> {
         val elements = answer.optJSONArray("elements") ?: return emptyList()
         return (0 until elements.length()).mapNotNull { i ->
             val e = elements.getJSONObject(i)
             val tags = e.optJSONObject("tags") ?: return@mapNotNull null
+            val category = kindOf(tags) ?: return@mapNotNull null
             val center = e.optJSONObject("center")
             val lat = if (e.has("lat")) e.getDouble("lat") else center?.optDouble("lat") ?: return@mapNotNull null
             val lon = if (e.has("lon")) e.getDouble("lon") else center?.optDouble("lon") ?: return@mapNotNull null

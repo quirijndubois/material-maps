@@ -1,6 +1,8 @@
 package app.materialmaps
 
 import org.json.JSONObject
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -58,6 +60,32 @@ object Wikipedia {
             }
         }
         return null
+    }
+
+    /**
+     * Articles about places in [area], in the phone's language, as places named like the
+     * article without its qualifier (so [nearby] finds it again when one is opened).
+     */
+    suspend fun inArea(area: LatLngBounds): List<Place> {
+        val center = area.center
+        // The API looks at most 10 km around a point.
+        val radius = (center.distanceTo(LatLng(area.latitudeNorth, area.longitudeEast))).toInt().coerceIn(10, 10_000)
+        val json = JSONObject(
+            httpGet(
+                "https://${languages.first()}.wikipedia.org/w/api.php?action=query&list=geosearch&format=json" +
+                    "&gscoord=${center.latitude}%7C${center.longitude}&gsradius=$radius&gslimit=150"
+            )
+        )
+        val results = json.optJSONObject("query")?.optJSONArray("geosearch") ?: return emptyList()
+        return (0 until results.length()).map { i ->
+            val r = results.getJSONObject(i)
+            Place(
+                name = r.optString("title").substringBefore(" ("),
+                subtitle = "Wikipedia",
+                lat = r.getDouble("lat"),
+                lon = r.getDouble("lon"),
+            )
+        }
     }
 
     private suspend fun summary(lang: String, title: String): WikiSummary? {
