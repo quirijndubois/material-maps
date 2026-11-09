@@ -142,6 +142,34 @@ class Route(
         )
     }
 
+    /**
+     * The stretches of this route more than [within] meters from [other], each running on to
+     * the points where it meets [other] again, so it joins that line rather than stopping short.
+     */
+    fun apartFrom(other: Route, within: Double = 15.0): List<List<LatLng>> {
+        if (points.size < 2 || other.points.size < 2) return listOf(points)
+        // Every few meters along this route, so long straight segments aren't judged by their ends only.
+        val samples = mutableListOf(points.first())
+        for (i in 1 until points.size) {
+            val steps = ceil(metersBetween(points[i - 1], points[i]) / SAMPLE_METERS).toInt().coerceAtLeast(1)
+            for (k in 1..steps) samples += points[i - 1].interpolate(points[i], k.toDouble() / steps)
+        }
+        val segments = 0 until other.points.size - 1
+        val apart = samples.map { other.nearest(it.latitude, it.longitude, segments).distance > within }
+        val stretches = mutableListOf<List<LatLng>>()
+        var i = 0
+        while (i < samples.size) {
+            if (!apart[i]) {
+                i++
+                continue
+            }
+            val start = (i - 1).coerceAtLeast(0)
+            while (i < samples.size && apart[i]) i++
+            stretches += samples.subList(start, (i + 1).coerceAtMost(samples.size))
+        }
+        return stretches
+    }
+
     private fun alongAt(segment: Int, t: Double) =
         if (points.size < 2) 0.0 else along[segment] + t * (along[segment + 1] - along[segment])
 
@@ -459,6 +487,9 @@ private fun roundCorners(points: List<LatLng>, radius: Double): List<LatLng> {
     result += points.last()
     return result
 }
+
+/** Meters between the points [Route.apartFrom] checks. */
+private const val SAMPLE_METERS = 8.0
 
 private fun LatLng.interpolate(other: LatLng, t: Double) =
     LatLng(latitude + (other.latitude - latitude) * t, longitude + (other.longitude - longitude) * t)

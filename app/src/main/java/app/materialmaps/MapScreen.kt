@@ -171,6 +171,7 @@ import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
+import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
 import java.util.Locale
 import java.time.DayOfWeek
@@ -213,6 +214,11 @@ private const val ROUTE_HEAD_CASING_LAYER = "route-head-casing"
 private const val ROUTE_HEAD_LAYER = "route-head-line"
 private const val ALT_ROUTE_SOURCE = "route-alternatives"
 private const val ALT_ROUTE_LAYER = "route-alternatives-line"
+// Walks are drawn as dots by layers of their own, shown instead of the solid ones: changing a
+// layer's dashes on the fly only shows on tiles drawn after, so half the line kept the old look.
+private const val ALT_ROUTE_DOTS_LAYER = "route-alternatives-dots"
+private const val ROUTE_DOTS_LAYER = "route-dots"
+private const val ROUTE_HEAD_DOTS_LAYER = "route-head-dots"
 private const val SAVED_SOURCE = "saved-places"
 private const val SAVED_LAYER = "saved-places-dot"
 private const val RESULTS_SOURCE = "search-results"
@@ -386,6 +392,11 @@ fun MapScreen(
     var routeError by remember { mutableStateOf<String?>(null) }
     var routeRequest by remember { mutableIntStateOf(0) }
     var navigating by remember { mutableStateOf(false) }
+    /**
+     * Walking is navigated differently: the map turns with the phone and the dot sits where the
+     * GPS puts it, as on foot the route is only a guide and the phone points where one looks.
+     */
+    val walking by remember { derivedStateOf { travelMode == TravelMode.Walk } }
     var progress by remember { mutableStateOf<RouteProgress?>(null) }
     val routeAhead = remember { RouteAhead() }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
@@ -482,7 +493,10 @@ fun MapScreen(
         follow = followAs
         m.animateCamera(CameraUpdateFactory.newCameraPosition(target), 700, object : MapLibreMap.CancelableCallback {
             override fun onFinish() {
-                if (flight == flights.get()) component.cameraMode = mode
+                if (flight != flights.get()) return
+                // Already over the user; MapLibre's own glide would ignore the compass and then snap.
+                if (mode == CameraMode.TRACKING_COMPASS) component.setCameraMode(mode, 1, null, null, null, null)
+                else component.cameraMode = mode
             }
             override fun onCancel() {
                 // Cut short by the user moving the map, not by a newer flight or mode.
@@ -549,6 +563,9 @@ fun MapScreen(
         animator.start()
     }
 
+    /** How the camera follows the user while navigating: along the route, or on foot with the phone. */
+    fun routeCameraMode() = if (walking) CameraMode.TRACKING_COMPASS else CameraMode.TRACKING_GPS
+
     /** Centers on the user and follows them: at street zoom, or turning with the route while navigating. */
     fun followMe() {
         val component = locationComponent()
@@ -557,7 +574,15 @@ fun MapScreen(
             return
         }
         overview = false
-        if (navigating) {
+        if (navigating && walking) {
+            // On foot: turning with the phone, a little tilted, the user a bit below the middle.
+            val heading = component.compassEngine?.lastHeading?.toDouble()
+            flyThenTrack(
+                CameraMode.TRACKING_COMPASS, Follow.Compass, zoom = 18.0, tilt = 30.0, bearing = heading,
+                topPadding = mapView.height * 0.25,
+                leftPadding = if (wide) with(density) { (SIDE_PANEL_WIDTH + 32.dp).toPx().toDouble() } else 0.0,
+            )
+        } else if (navigating) {
             // The driving view: heading up, tilted, with the user low on screen to see the road ahead.
             val here = component.lastKnownLocation
             val bearing = here?.takeIf { it.hasBearing() }?.bearing?.toDouble()
@@ -1002,7 +1027,7 @@ fun MapScreen(
         directionsFrom = null
         navigating = true
         progress = null
-        locationComponent()?.setNavigationPuck(context, style, accent, navigating = true, settings.vehicle)
+        locationComponent()?.setNavigationPuck(context, style, accent, navigating = !walking, settings.vehicle)
         followMe()
     }
 
@@ -1090,6 +1115,10 @@ fun MapScreen(
                 add(line(ROUTE_HEAD_CASING_LAYER, ROUTE_HEAD_SOURCE, casing, 6f, border = 4f))
                 add(line(ROUTE_LAYER, ROUTE_SOURCE, accent, 6f))
                 add(line(ROUTE_HEAD_LAYER, ROUTE_HEAD_SOURCE, accent, 6f))
+                val dots = arrayOf(0f, 2f)
+                add(line(ALT_ROUTE_DOTS_LAYER, ALT_ROUTE_SOURCE, colors.outline.toArgb(), 6f).withProperties(PropertyFactory.lineDasharray(dots)))
+                add(line(ROUTE_DOTS_LAYER, ROUTE_SOURCE, accent, 6f).withProperties(PropertyFactory.lineDasharray(dots)))
+                add(line(ROUTE_HEAD_DOTS_LAYER, ROUTE_HEAD_SOURCE, accent, 6f).withProperties(PropertyFactory.lineDasharray(dots)))
                 // With stops, each leg in its own color: the app's for the first, then the others.
                 fun byLeg(shade: Float) = Expression.match(
                     Expression.coalesce(Expression.get("leg"), Expression.literal(0)),
@@ -1098,7 +1127,7 @@ fun MapScreen(
                         Expression.stop(i, Expression.color(ColorUtils.blendARGB(legColor(i, accent), android.graphics.Color.BLACK, shade)))
                     }.toTypedArray(),
                 )
-                listOf(ROUTE_LAYER, ROUTE_HEAD_LAYER).forEach { loaded.getLayer(it)?.setProperties(PropertyFactory.lineColor(byLeg(0f))) }
+                listOf(ROUTE_LAYER, ROUTE_HEAD_LAYER, ROUTE_DOTS_LAYER, ROUTE_HEAD_DOTS_LAYER).forEach { loaded.getLayer(it)?.setProperties(PropertyFactory.lineColor(byLeg(0f))) }
                 listOf(ROUTE_CASING_LAYER, ROUTE_HEAD_CASING_LAYER).forEach { loaded.getLayer(it)?.setProperties(PropertyFactory.lineColor(byLeg(0.35f))) }
                 // Walks as dots, rides in the line's own color.
                 add(
@@ -1263,7 +1292,7 @@ fun MapScreen(
             m.addOnCameraMoveListener {
                 // Following, the camera sits on the arrow as it glides, so the route can be cut
                 // right where the arrow is on every frame.
-                if (navigating && locationComponent()?.cameraMode == CameraMode.TRACKING_GPS) {
+                if (navigating && locationComponent()?.cameraMode == routeCameraMode()) {
                     val route = routes.getOrNull(routeIndex)
                     val s = style
                     val target = m.cameraPosition.target
@@ -1286,7 +1315,7 @@ fun MapScreen(
                 }
                 // Tapping yourself while navigating picks what you drive.
                 val here = locationComponent()?.lastKnownLocation
-                if (navigating && here != null) {
+                if (navigating && !walking && here != null) {
                     val at = m.projection.toScreenLocation(LatLng(here.latitude, here.longitude))
                     val tap = m.projection.toScreenLocation(point)
                     if (hypot(at.x - tap.x, at.y - tap.y) < dp(40)) {
@@ -1342,7 +1371,7 @@ fun MapScreen(
                 }
                 if (directionsTo != null) {
                     // Tapping an alternative route picks it.
-                    val route = hit(ALT_ROUTE_LAYER)
+                    val route = hit(ALT_ROUTE_LAYER, ALT_ROUTE_DOTS_LAYER)
                     route?.getNumberProperty("index")?.toInt()?.let { routeIndex = it }
                     route != null
                 } else {
@@ -1400,8 +1429,8 @@ fun MapScreen(
     }
 
     // A newly picked vehicle shows right away.
-    LaunchedEffect(settings.vehicle) {
-        if (navigating) locationComponent()?.setNavigationPuck(context, style, accent, navigating = true, settings.vehicle)
+    LaunchedEffect(settings.vehicle, walking) {
+        if (navigating) locationComponent()?.setNavigationPuck(context, style, accent, navigating = !walking, settings.vehicle)
     }
 
     // Satellite, labels, 3D buildings and overlays, as picked from the layers button.
@@ -1441,7 +1470,7 @@ fun MapScreen(
         val m = map ?: return@LaunchedEffect
         val s = style ?: return@LaunchedEffect
         if (!hasLocationPermission) return@LaunchedEffect
-        m.enableLocation(context, s, headingEngine, accent, gps = navigating, vehicle = settings.vehicle) { following -> if (!following) follow = Follow.Off }
+        m.enableLocation(context, s, headingEngine, accent, gps = navigating && !walking, vehicle = settings.vehicle) { following -> if (!following) follow = Follow.Off }
         if (wantsTracking) {
             wantsTracking = false
             // Tracking only zooms once there is a fix, so wait for the first one (usually the
@@ -1604,24 +1633,37 @@ fun MapScreen(
         val s = style ?: return@LaunchedEffect
         val main = s.getSourceAs<GeoJsonSource>(ROUTE_SOURCE) ?: return@LaunchedEffect
         val alternatives = s.getSourceAs<GeoJsonSource>(ALT_ROUTE_SOURCE) ?: return@LaunchedEffect
-        fun Route.line() = LineString.fromLngLats(points.map { Point.fromLngLat(it.longitude, it.latitude) })
         val route = routes.getOrNull(routeIndex)
         if (!navigating) {
             routeAhead.clear(s)
             main.setGeoJson(FeatureCollection.fromFeatures(route?.legFeatures().orEmpty()))
         }
-        alternatives.setGeoJson(
-            FeatureCollection.fromFeatures(
-                routes.mapIndexedNotNull { i, r ->
-                    if (i == routeIndex) null
-                    else Feature.fromGeometry(r.line()).apply { addNumberProperty("index", i) }
-                }
-            )
-        )
+        // Alternatives only where they go another way: under the chosen route they'd show
+        // through its gaps, and between its dots on foot.
+        val others = withContext(Dispatchers.Default) {
+            routes.mapIndexedNotNull { i, r ->
+                if (i == routeIndex) return@mapIndexedNotNull null
+                val stretches = if (route != null) r.apartFrom(route) else listOf(r.points)
+                Feature.fromGeometry(
+                    MultiLineString.fromLngLats(stretches.map { line -> line.map { Point.fromLngLat(it.longitude, it.latitude) } })
+                ).apply { addNumberProperty("index", i) }
+            }
+        }
+        alternatives.setGeoJson(FeatureCollection.fromFeatures(others))
         if (route != null && route.points.size >= 2 && !navigating) {
             stopTracking()
             frame(route.points, 300)
         }
+    }
+
+    // A walk is drawn as dots, like the walks between rides; other routes as a solid line.
+    LaunchedEffect(style, walking) {
+        val s = style ?: return@LaunchedEffect
+        fun show(visible: Boolean, vararg layers: String) = layers.forEach {
+            s.getLayer(it)?.setProperties(PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE))
+        }
+        show(!walking, ALT_ROUTE_LAYER, ROUTE_CASING_LAYER, ROUTE_HEAD_CASING_LAYER, ROUTE_LAYER, ROUTE_HEAD_LAYER)
+        show(walking, ALT_ROUTE_DOTS_LAYER, ROUTE_DOTS_LAYER, ROUTE_HEAD_DOTS_LAYER)
     }
 
     // Draw the chosen public transport journey (the first one while browsing the list).
@@ -1880,7 +1922,7 @@ fun MapScreen(
                 liveSpeed = if (here.hasSpeed()) here.speed else null
                 // Only show the road ahead. While following, the camera listener does this every
                 // frame; otherwise the latest fix will do.
-                if (locationComponent()?.cameraMode != CameraMode.TRACKING_GPS) {
+                if (locationComponent()?.cameraMode != routeCameraMode()) {
                     style?.let { routeAhead.draw(it, route, p.snapped) }
                 }
                 val component = locationComponent()
@@ -1905,7 +1947,7 @@ fun MapScreen(
     // Run the foreground service while navigating, and take location updates of our own: the
     // map's location component stops listening when the app goes to the background.
     // The map's arrow is fed from here while navigating: on the route it's moved every frame
-    // (see RouteHeadingEngine), off it each fix is passed on.
+    // (see RouteHeadingEngine), off it, or on foot, each fix is passed on.
     DisposableEffect(navigating) {
         if (!navigating) return@DisposableEffect onDispose {}
         NavigationService.start(context, "Navigating", directionsTo?.name)
@@ -1981,9 +2023,10 @@ fun MapScreen(
         }
     }
 
-    // While navigating, the arrow and the map point along the route rather than where the phone points.
-    LaunchedEffect(navigating, routes, routeIndex) {
-        headingEngine.route = if (navigating) routes.getOrNull(routeIndex) else null
+    // While navigating, the arrow and the map point along the route rather than where the phone
+    // points. Not on foot: there the dot goes where the GPS says and turns with the phone.
+    LaunchedEffect(navigating, routes, routeIndex, walking) {
+        headingEngine.route = if (navigating && !walking) routes.getOrNull(routeIndex) else null
     }
 
     // Keep the screen on while navigating.
@@ -2022,7 +2065,7 @@ fun MapScreen(
         Box(Modifier.fillMaxSize()) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
             val vehicleModel = settings.vehicle.model
-            if (navigating && vehicleModel != null) {
+            if (navigating && !walking && vehicleModel != null) {
                 // Placed over the user every frame by the view itself.
                 AndroidView(
                     factory = { VehicleOverlay(it) },
