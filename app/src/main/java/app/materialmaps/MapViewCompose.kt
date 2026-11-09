@@ -16,6 +16,7 @@ fun rememberMapViewWithLifecycle(): MapView {
     val context = LocalContext.current
     val mapView = remember {
         MapLibre.getInstance(context)
+        AerialTiles.install()
         MapView(context).apply { onCreate(null) }
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle

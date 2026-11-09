@@ -80,10 +80,11 @@ Kotlin, Jetpack Compose, Material 3 and the MapLibre Android SDK. There's no oth
 | `SearchUi.kt`, `DirectionsUi.kt`, `TransitUi.kt` | Compose UI for results, routes, navigation, journeys and departure boards |
 | `Credits.kt` | The credits sheet and open-source licenses screen |
 | `Http.kt` | A small HTTP GET helper |
+| `Layers.kt`, `AerialTiles.kt` | Satellite photos, terrain and the other map overlays |
 
 ## Data and services
 
-All of these are free, community-run services. Please be kind to them.
+All of these are free to use, and most are community-run. Please be kind to them.
 
 | What | Service |
 | --- | --- |
@@ -91,6 +92,7 @@ All of these are free, community-run services. Please be kind to them.
 | Driving, cycling and walking routes | [Valhalla](https://github.com/valhalla/valhalla) on the [FOSSGIS](https://www.fossgis.de) server |
 | Public transport, departures and search | [Transitous](https://transitous.org) ([MOTIS](https://github.com/motis-project/motis)), with Dutch data from [OpenOV](https://openov.nl) |
 | Search fallback | [Photon](https://photon.komoot.io) by komoot |
+| Satellite photos | [Sentinel-2 cloudless 2016](https://s2maps.eu) by EOX (CC BY 4.0), with 8 cm aerial photos of the Netherlands from [Beeldmateriaal Nederland](https://www.beeldmateriaal.nl) via [PDOK](https://www.pdok.nl) (CC BY 4.0) |
 
 Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the ODbL.
 

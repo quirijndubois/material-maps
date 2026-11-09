@@ -29,4 +29,4 @@
 <li>Live departure boards for every stop and station, with a tab per kind of transport</li>
 </ul>
 
-<p>Data and services: map tiles from OpenFreeMap, routing by Valhalla on the FOSSGIS server, public transport from Transitous (MOTIS), and search fallback from Photon by komoot. Map data © OpenStreetMap contributors.</p>
+<p>Data and services: map tiles from OpenFreeMap, routing by Valhalla on the FOSSGIS server, public transport from Transitous (MOTIS), search fallback from Photon by komoot, and satellite photos from Sentinel-2 cloudless by EOX, with aerial photos of the Netherlands from Beeldmateriaal Nederland (PDOK). Map data © OpenStreetMap contributors.</p>

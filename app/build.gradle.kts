@@ -83,5 +83,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("org.maplibre.gl:android-sdk:11.13.5")
+    // MapLibre's HTTP client, used directly to tidy up aerial photo tiles (AerialTiles.kt).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.mikepenz:aboutlibraries-core:12.2.4")
 }

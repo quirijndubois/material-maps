@@ -46,8 +46,17 @@ enum class Overlay(
 
 private const val PREFIX = "layers-"
 private const val SATELLITE = "${PREFIX}satellite"
+private const val AERIAL = "${PREFIX}aerial"
 private const val TERRAIN = "${PREFIX}terrain"
-private const val SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+/** Sentinel-2 cloudless 2016 by EOX: the whole world at 10 m a pixel, CC BY 4.0. */
+private const val SATELLITE_TILES = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg"
+/**
+ * Aerial photos of the Netherlands from Beeldmateriaal Nederland via PDOK, at 8 cm a pixel,
+ * CC BY 4.0. Drawn over [SATELLITE] from [AERIAL_ZOOM]; [AerialTiles] makes the white beyond
+ * the border see-through.
+ */
+private const val AERIAL_TILES = "https://$AERIAL_HOST/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg"
+private const val AERIAL_ZOOM = 12f
 private const val TERRAIN_TILES = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 private const val CITY_RAIL = "${PREFIX}city-rail"
 /** OpenStreetMap in the Shortbread schema; free to use, and fast. */
@@ -77,7 +86,7 @@ fun Style.applyLayers(settings: Settings, dark: Boolean, below: String) {
     }
     for (layer in layers) when (layer) {
         is FillExtrusionLayer -> show(layer, settings.buildings3d)
-        // On satellite, the photo takes the place of the land, water and parks.
+        // On satellite, the photos take the place of the land, water and parks.
         is FillLayer, is RasterLayer, is HillshadeLayer -> show(layer, !settings.satellite)
         is SymbolLayer -> show(layer, settings.labels)
         else -> Unit
@@ -86,14 +95,29 @@ fun Style.applyLayers(settings: Settings, dark: Boolean, below: String) {
     if (settings.satellite) {
         if (getLayer(SATELLITE) == null) {
             if (getSource(SATELLITE) == null) {
-                addSource(RasterSource(SATELLITE, TileSet("2.2.0", SATELLITE_TILES).apply { maxZoom = 19f }, 256))
+                addSource(RasterSource(SATELLITE, TileSet("2.2.0", SATELLITE_TILES).apply { maxZoom = 14f }, 256))
             }
             val layer = RasterLayer(SATELLITE, SATELLITE)
             val background = layers.firstOrNull { it is BackgroundLayer }
             if (background != null) addLayerAbove(layer, background.id) else addLayerAt(layer, 0)
         }
-        getLayer(SATELLITE)?.setProperties(PropertyFactory.rasterBrightnessMax(if (dark) 0.8f else 1f))
+        if (getLayer(AERIAL) == null) {
+            if (getSource(AERIAL) == null) {
+                val tiles = TileSet("2.2.0", AERIAL_TILES).apply {
+                    minZoom = AERIAL_ZOOM
+                    maxZoom = 20f
+                    // The Netherlands with the Wadden Islands, so no tiles are asked for elsewhere.
+                    setBounds(3.2f, 50.7f, 7.3f, 53.6f)
+                }
+                addSource(RasterSource(AERIAL, tiles, 256))
+            }
+            addLayerAbove(RasterLayer(AERIAL, AERIAL), SATELLITE)
+        }
+        for (id in listOf(SATELLITE, AERIAL)) {
+            getLayer(id)?.setProperties(PropertyFactory.rasterBrightnessMax(if (dark) 0.8f else 1f))
+        }
     } else {
+        remove(AERIAL)
         remove(SATELLITE)
     }
 

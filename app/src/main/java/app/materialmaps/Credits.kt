@@ -108,9 +108,14 @@ private val credits = listOf(
         "https://openfreemap.org",
     ),
     Credit(
-        Icons.Outlined.SatelliteAlt, "Esri World Imagery",
-        "Satellite photos. Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community.",
-        "https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9",
+        Icons.Outlined.SatelliteAlt, "Sentinel-2 cloudless · EOX",
+        "Satellite photos. Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0.",
+        "https://s2maps.eu",
+    ),
+    Credit(
+        Icons.Outlined.SatelliteAlt, "Beeldmateriaal Nederland · PDOK",
+        "Aerial photos of the Netherlands, CC BY 4.0.",
+        "https://www.beeldmateriaal.nl",
     ),
     Credit(
         Icons.Outlined.Terrain, "Terrain Tiles · Mapzen",
