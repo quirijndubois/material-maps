@@ -45,7 +45,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -309,6 +311,11 @@ fun MapScreen(
     var shortcuts by remember { mutableStateOf(Shortcuts.load(context)) }
     var picking by remember { mutableStateOf<PickFor?>(null) }
     var categoryLoading by remember { mutableStateOf<Category?>(null) }
+    var kindLoading by remember { mutableStateOf<PlaceKind?>(null) }
+    // Kinds of places the search text could mean ("supermarket"), and the search text that's
+    // just the name of the kind being shown, which shouldn't then be searched as text.
+    var kindMatches by remember { mutableStateOf(emptyList<Pair<PlaceKind, Double>>()) }
+    var kindQuery by remember { mutableStateOf<String?>(null) }
     var details by remember { mutableStateOf<PlaceDetails?>(null) }
     // Measuring distance: the points placed so far, or null when not measuring, and the map
     // point under the crosshair, where the next one would go.
@@ -643,68 +650,102 @@ fun MapScreen(
     }
 
     /**
-     * Places of [category] in the map data already on the phone, within [bounds]. Instant and
+     * Places of [kind] in the map data already on the phone, within [bounds]. Instant and
      * offline, but only as complete as the tiles: zoomed out they leave out smaller places.
      */
-    fun categoryFromMap(category: Category, bounds: LatLngBounds): List<Place> {
+    fun kindFromMap(kind: PlaceKind, bounds: LatLngBounds): List<Place> {
         val s = style ?: return emptyList()
         val sourceId = poiLayers.firstNotNullOfOrNull { (s.getLayer(it) as? SymbolLayer)?.sourceId } ?: return emptyList()
         val source = s.getSourceAs<VectorSource>(sourceId) ?: return emptyList()
         return source.querySourceFeatures(arrayOf("poi"), null).mapNotNull { feature ->
             val subclass = feature.getStringProperty("subclass") ?: return@mapNotNull null
-            if (subclass !in category.subclasses) return@mapNotNull null
+            if (subclass !in kind.subclasses) return@mapNotNull null
             val point = feature.geometry() as? Point ?: return@mapNotNull null
             if (!bounds.contains(LatLng(point.latitude(), point.longitude()))) return@mapNotNull null
             val name = feature.getStringProperty("name")?.takeIf { it.isNotBlank() }
-            if (name == null && category.needsName) return@mapNotNull null
+            if (name == null && kind.needsName) return@mapNotNull null
             Place(
-                name = name ?: category.label.removeSuffix("s"),
+                name = name ?: kind.label.removeSuffix("s"),
                 subtitle = "",
                 lat = point.latitude(),
                 lon = point.longitude(),
                 type = subclass,
-                key = category.key,
+                key = kind.key,
             )
         }
             // Tiles overlap a little, so the same place can come back more than once.
             .distinctBy { Triple(it.name, (it.lat * 1e4).roundToLong(), (it.lon * 1e4).roundToLong()) }
     }
 
-    /** Everything of one kind on screen: from the map itself, or else from OpenStreetMap online. */
-    fun showCategory(category: Category) {
+    /**
+     * [request]'s answer if it comes within [millis], else null. A network read can't be cut
+     * short, so it's left to finish on its own instead of keeping the user waiting.
+     */
+    suspend fun <T> briefly(millis: Long, request: suspend () -> T): T? {
+        val answer = scope.async(Dispatchers.IO) { runCatching { request() }.getOrNull() }
+        return withTimeoutOrNull(millis) { answer.await() }.also { if (it == null) answer.cancel() }
+    }
+
+    /**
+     * Every [kind] of place nearby, for a search like "supermarket" or a quick button. Zoomed
+     * in, that's around what's on screen; zoomed out, around the user (or the middle of the
+     * map), looking further when there are only a few. Read from the map's street-level tiles,
+     * which have every shop and café; OpenStreetMap's Overpass only for kinds they leave out.
+     */
+    fun showKind(kind: PlaceKind, chip: Category? = null) {
         val m = map ?: return
-        val bounds = m.projection.visibleRegion.latLngBounds
-        fun show(found: List<Place>) {
-            query = category.label
-            results = found
-            resultsFor = category.label
-            showOnMap(found)
-        }
-        val local = categoryFromMap(category, bounds)
-        if (local.isNotEmpty()) {
-            show(local)
-            return
-        }
-        // Asking Overpass about a whole region is slow and heavy on a shared server.
-        if (m.cameraPosition.zoom < 12) {
-            Toast.makeText(context, "Zoom in to find ${category.label.lowercase()}", Toast.LENGTH_SHORT).show()
-            return
-        }
+        expanded = false
+        keyboard?.hide()
+        val camera = m.cameraPosition
+        val view = m.projection.visibleRegion.latLngBounds
+        val here = myLocation()?.let { LatLng(it.latitude, it.longitude) }
+        val zoomedIn = camera.zoom >= 14
+        val center = if (zoomedIn) view.center else here ?: camera.target ?: return
+        // What's on screen, but never just the block one is zoomed in on.
+        val radius = if (zoomedIn) (metersBetween(view.northEast, view.southWest) / 2).coerceIn(800.0, 2500.0) else 1200.0
         scope.launch {
-            categoryLoading = category
+            categoryLoading = chip
+            kindLoading = kind
             try {
-                val found = Overpass.find(category, bounds)
-                if (found.isEmpty()) Toast.makeText(context, "No ${category.label.lowercase()} here", Toast.LENGTH_SHORT).show()
-                else show(found)
+                var found = try {
+                    // Look further until there's a fair choice; each step is a few more tiles.
+                    var near = PoiTiles.near(kind, center, radius)
+                    for (further in listOf(2000.0, 3000.0)) {
+                        if (near.size >= 10 || further <= radius) continue
+                        near = PoiTiles.near(kind, center, further)
+                    }
+                    near
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Toast.makeText(context, "Couldn't search right now", Toast.LENGTH_SHORT).show()
+                    // Offline: whatever the map on screen has.
+                    kindFromMap(kind, view)
+                }
+                if (found.isEmpty()) {
+                    val dLat = radius / 111_320.0
+                    val dLon = radius / (111_320.0 * kotlin.math.cos(Math.toRadians(center.latitude)))
+                    val box = LatLngBounds.from(center.latitude + dLat, center.longitude + dLon, center.latitude - dLat, center.longitude - dLon)
+                    found = briefly(12_000) { Overpass.find(kind, box) }.orEmpty()
+                }
+                if (found.isEmpty()) {
+                    Toast.makeText(context, "No ${kind.label.lowercase()} nearby", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val from = here ?: center
+                // The search bar shows what was looked for; that isn't a new text search.
+                kindQuery = kind.label
+                query = kind.label
+                results = found.sortedBy { distanceKm(from.latitude, from.longitude, it.lat, it.lon) }
+                resultsFor = kind.label
+                showOnMap(results, bottomSpace = 380)
             } finally {
                 categoryLoading = null
+                kindLoading = null
             }
         }
     }
+
+    fun showCategory(category: Category) = showKind(category.kind, chip = category)
 
     fun downloadVisibleArea() {
         val m = map ?: return
@@ -1231,6 +1272,7 @@ fun MapScreen(
     // Search while typing. Requests aren't cancelled when the next key comes in (Photon
     // often takes a second to answer); the newest answer to arrive wins instead. Each search
     // shows its quick first answer, then the full one.
+    LaunchedEffect(Unit) { PlaceKinds.load(context) }
     LaunchedEffect(Unit) {
         var sent = 0L
         var shown = 0L
@@ -1238,6 +1280,9 @@ fun MapScreen(
             .distinctUntilChanged()
             .debounce(200)
             .collect { q ->
+                // Showing a kind of place put its name in the bar; that's no new search.
+                if (q == kindQuery) return@collect
+                kindMatches = if (q.isEmpty()) emptyList() else withContext(Dispatchers.Default) { PlaceKinds.match(q) }
                 val id = ++sent
                 val center = map?.cameraPosition
                 val lat = center?.target?.latitude
@@ -1256,7 +1301,7 @@ fun MapScreen(
                     val outcome = try {
                         Result.success(
                             Geocoder.search(q, lat, lon, center?.zoom, early = { first ->
-                                if (id >= shown) {
+                                if (id >= shown && query.trim() != kindQuery) {
                                     shown = id
                                     results = first
                                     resultsFor = q
@@ -1270,7 +1315,7 @@ fun MapScreen(
                         Result.failure(e)
                     }
                     if (id == sent) searching = false
-                    if (id < shown) return@launch
+                    if (id < shown || query.trim() == kindQuery) return@launch
                     outcome.onSuccess {
                         shown = id
                         results = it
@@ -2168,9 +2213,14 @@ fun MapScreen(
                                 query = query,
                                 onQueryChange = {
                                     query = it
+                                    kindQuery = null
                                     resultsOnMap = false
                                 },
-                                onSearch = { showResultsOnMap() },
+                                onSearch = {
+                                    // "supermarket": all of them nearby, not places called that.
+                                    val kind = kindMatches.firstOrNull()?.takeIf { it.second >= PlaceKinds.SURE }?.first
+                                    if (kind != null && query.trim() != kindQuery) showKind(kind) else showResultsOnMap()
+                                },
                                 expanded = expanded,
                                 onExpandedChange = { expanded = it },
                                 placeholder = { Text("Search here") },
@@ -2233,9 +2283,13 @@ fun MapScreen(
                                     recents = emptyList()
                                 })
                             }
-                            searchFailed && results.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
-                            results.isEmpty() && resultsFor == q && !searching -> SearchHint("No results for \"$q\"")
+                            searchFailed && results.isEmpty() && kindMatches.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
+                            results.isEmpty() && resultsFor == q && !searching && kindMatches.isEmpty() -> SearchHint("No results for \"$q\"")
                             else -> LazyColumn {
+                                // Kinds of places first: "Supermarket · nearby" shows them all.
+                                if (q != kindQuery) items(kindMatches.map { it.first }) { kind ->
+                                    KindRow(kind, loading = kindLoading == kind, onClick = { showKind(kind) })
+                                }
                                 if (results.size > 1) item {
                                     AssistChip(
                                         onClick = ::showResultsOnMap,

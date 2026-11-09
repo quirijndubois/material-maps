@@ -353,7 +353,7 @@ internal fun decodePolyline(encoded: String, precision: Int = 6): List<LatLng> {
 private const val EARTH_RADIUS = 6_371_000.0
 private const val METERS_PER_DEGREE = EARTH_RADIUS * Math.PI / 180
 
-private fun metersBetween(a: LatLng, b: LatLng): Double {
+internal fun metersBetween(a: LatLng, b: LatLng): Double {
     val dLat = Math.toRadians(b.latitude - a.latitude)
     val dLon = Math.toRadians(b.longitude - a.longitude)
     val h = sin(dLat / 2).let { it * it } +

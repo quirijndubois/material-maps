@@ -2,6 +2,11 @@ package app.materialmaps
 
 import android.location.Location
 import androidx.compose.foundation.clickable
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalance
 import androidx.compose.material.icons.outlined.DirectionsBus
@@ -34,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 
@@ -128,4 +134,24 @@ private fun categoryIcon(category: String?): ImageVector = when (category) {
     "bus_stop", "bus_station" -> Icons.Outlined.DirectionsBus
     null -> Icons.Outlined.Place
     else -> if (category.startsWith("shop")) Icons.Outlined.Storefront else Icons.Outlined.Place
+}
+
+/** A search suggestion for every place of a kind nearby, above the places found by name. */
+@Composable
+fun KindRow(kind: PlaceKind, loading: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    ListItem(
+        headlineContent = { Text(kind.label) },
+        supportingContent = { Text("Show all nearby") },
+        leadingContent = {
+            Surface(shape = CircleShape, color = colors.primaryContainer, modifier = Modifier.size(40.dp)) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = colors.onPrimaryContainer)
+                    else Icon(kind.icon, contentDescription = null, tint = colors.onPrimaryContainer, modifier = Modifier.size(22.dp))
+                }
+            }
+        },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.clickable(onClick = onClick),
+    )
 }

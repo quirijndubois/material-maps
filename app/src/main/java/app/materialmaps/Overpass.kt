@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import org.json.JSONObject
+import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import java.net.URLEncoder
 import java.time.DayOfWeek
@@ -54,7 +55,9 @@ enum class Category(
     Atms("ATMs", Icons.Outlined.LocalAtm, "amenity", "atm", needsName = false),
     Toilets("Toilets", Icons.Outlined.Wc, "amenity", "toilets", needsName = false),
     Hospitals("Hospitals", Icons.Outlined.LocalHospital, "amenity", "hospital"),
-    BikeParking("Bike parking", Icons.Outlined.PedalBike, "amenity", "bicycle_parking", needsName = false),
+    BikeParking("Bike parking", Icons.Outlined.PedalBike, "amenity", "bicycle_parking", needsName = false);
+
+    val kind get() = PlaceKind(label, key, value, subclasses, needsName)
 }
 
 /** Opening hours, phone and website of a place, from OpenStreetMap. */
@@ -97,11 +100,15 @@ object Overpass {
     }
 
     /** Places of [category] within [bounds], at most [limit]. */
-    suspend fun find(category: Category, bounds: LatLngBounds, limit: Int = 80): List<Place> {
+    suspend fun find(category: PlaceKind, bounds: LatLngBounds, limit: Int = 80): List<Place> {
         val box = "${bounds.latitudeSouth},${bounds.longitudeWest},${bounds.latitudeNorth},${bounds.longitudeEast}"
         val name = if (category.needsName) "[\"name\"]" else ""
         val query = "[out:json][timeout:20];nwr[\"${category.key}\"=\"${category.value}\"]$name($box);out center tags $limit;"
-        val elements = run(query).optJSONArray("elements") ?: return emptyList()
+        return places(run(query), category)
+    }
+
+    private fun places(answer: JSONObject, category: PlaceKind): List<Place> {
+        val elements = answer.optJSONArray("elements") ?: return emptyList()
         return (0 until elements.length()).mapNotNull { i ->
             val e = elements.getJSONObject(i)
             val tags = e.optJSONObject("tags") ?: return@mapNotNull null
@@ -120,6 +127,14 @@ object Overpass {
                 key = category.key,
             )
         }
+    }
+
+    /** Places of [kind] within [radius] meters of the line through [path], at most [limit]. */
+    suspend fun alongPath(kind: PlaceKind, path: List<LatLng>, radius: Int, limit: Int = 120): List<Place> {
+        val line = path.joinToString(",") { String.format(Locale.US, "%.5f,%.5f", it.latitude, it.longitude) }
+        val name = if (kind.needsName) "[\"name\"]" else ""
+        val query = "[out:json][timeout:25];nwr[\"${kind.key}\"=\"${kind.value}\"]$name(around:$radius,$line);out center tags $limit;"
+        return places(run(query), kind)
     }
 
     /** Details of the OpenStreetMap feature named like [place] closest to it, if there is one. */

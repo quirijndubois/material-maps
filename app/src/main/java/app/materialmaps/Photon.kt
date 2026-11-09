@@ -15,6 +15,11 @@ data class Place(
     val type: String? = null,
     /** OSM key such as `amenity` or `shop`; [type] is its value. */
     val key: String? = null,
+    /**
+     * How well known the place is, 0 to 1, where the data says: from how many languages its
+     * name is in and how the map ranks it. Used to put notable places first among results.
+     */
+    val prominence: Double = 0.0,
 )
 
 /**
