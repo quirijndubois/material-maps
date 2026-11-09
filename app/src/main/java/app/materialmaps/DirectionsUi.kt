@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.DirectionsBoat
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DirectionsTransit
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Place
@@ -349,6 +350,7 @@ fun RoutePanel(
     onRetry: () -> Unit,
     onStart: () -> Unit,
     onOpenElsewhere: () -> Unit,
+    onSearchAlong: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -417,6 +419,9 @@ fun RoutePanel(
                             Text(if (showSteps) "Hide steps" else "Steps")
                         }
                         Spacer(Modifier.weight(1f))
+                        IconButton(onClick = onSearchAlong) {
+                            Icon(Icons.Filled.Search, contentDescription = "Search along route")
+                        }
                         IconButton(onClick = onOpenElsewhere) {
                             Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open in another app")
                         }
@@ -510,6 +515,7 @@ fun NavigationPanel(
     muted: Boolean,
     onToggleMute: () -> Unit,
     onEnd: () -> Unit,
+    onSearchAlong: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -528,6 +534,9 @@ fun NavigationPanel(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            IconButton(onClick = onSearchAlong) {
+                Icon(Icons.Filled.Search, contentDescription = "Search along route")
             }
             IconButton(onClick = onToggleMute) {
                 Icon(

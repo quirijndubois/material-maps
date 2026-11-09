@@ -217,6 +217,9 @@ private const val SAVED_LAYER = "saved-places-dot"
 private const val RESULTS_SOURCE = "search-results"
 private const val RESULTS_LAYER = "search-results-dot"
 private const val RESULTS_LABEL_LAYER = "search-results-label"
+private const val ALONG_SOURCE = "along-route"
+private const val ALONG_LAYER = "along-route-dot"
+private const val ALONG_LABEL_LAYER = "along-route-label"
 private const val TRANSIT_WALK_SOURCE = "transit-walks"
 private const val TRANSIT_WALK_LAYER = "transit-walks-line"
 private const val TRANSIT_RIDE_SOURCE = "transit-rides"
@@ -240,7 +243,7 @@ private val SIDE_PANEL_WIDTH = 400.dp
 /** How close the location button zooms in, unless already closer. */
 private const val FOLLOW_ZOOM = 16.0
 
-private enum class Panel { None, Place, List, Results, Route, Navigation, Trip, Measure }
+private enum class Panel { None, Place, List, Results, Route, Along, Navigation, Trip, Measure }
 
 /** What the place picker is choosing a place for. */
 private enum class PickFor { Stop, Home, Work, Origin, Destination }
@@ -370,6 +373,14 @@ fun MapScreen(
     val routeAhead = remember { RouteAhead() }
     var lastRerouteAt by remember { mutableLongStateOf(0L) }
     var speedLimits by remember { mutableStateOf<SpeedLimits?>(null) }
+    // Search along the route: what's looked for, and what's on the way.
+    var showAlong by remember { mutableStateOf(false) }
+    var alongKind by remember { mutableStateOf<PlaceKind?>(null) }
+    var alongHits by remember { mutableStateOf(emptyList<AlongHit>()) }
+    var alongLoading by remember { mutableStateOf(false) }
+    var alongFailed by remember { mutableStateOf(false) }
+    /** The place on the way whose pin was tapped, pointed out in the list. */
+    var alongFocus by remember { mutableStateOf<Place?>(null) }
     /** The latest GPS speed while navigating, in m/s; null when the GPS doesn't say. */
     var liveSpeed by remember { mutableStateOf<Float?>(null) }
     // While navigating: the latest fix, kept coming in the background too (see NavigationService).
@@ -749,6 +760,73 @@ fun MapScreen(
 
     fun showCategory(category: Category) = showKind(category.kind, chip = category)
 
+    /** Frames where one is and the places found on the way, all along it, so they can be seen on the map. */
+    fun showAlongOnMap() {
+        val hits = alongHits
+        if (hits.isEmpty()) return
+        val start = progress?.snapped ?: myLocation()?.let { LatLng(it.latitude, it.longitude) }
+            ?: routes.getOrNull(routeIndex)?.points?.firstOrNull()
+        stopTracking()
+        frame(listOfNotNull(start) + hits.map { LatLng(it.place.lat, it.place.lon) }, bottomSpace = 420)
+    }
+
+    fun closeAlong() {
+        showAlong = false
+        alongFocus = null
+        // Back to the driving view, which looking around left.
+        if (navigating) followMe()
+    }
+
+    /**
+     * Places of [kind] along the rest of the route: first what the map on the phone has,
+     * instantly, then everything OpenStreetMap has in a corridor along the way.
+     */
+    fun searchAlong(kind: PlaceKind) {
+        val route = routes.getOrNull(routeIndex) ?: return
+        val traveled = progress?.traveled ?: 0.0
+        val (length, radius) = AlongRoute.reach(travelMode)
+        val path = AlongRoute.path(route, traveled, length)
+        alongKind = kind
+        alongHits = emptyList()
+        alongFocus = null
+        alongFailed = false
+        alongLoading = true
+        scope.launch {
+            try {
+                PoiTiles.along(kind, path, radius.toDouble()) { found ->
+                    if (alongKind == kind) alongHits = withContext(Dispatchers.Default) { AlongRoute.rank(route, traveled, found, radius) }
+                }
+                if (alongHits.isEmpty() && alongKind == kind) {
+                    // Kinds the map's tiles leave out: ask OpenStreetMap, but not for long.
+                    // A query can only be so long: every few points of the path will do for it.
+                    val thinned = path.filterIndexed { i, _ -> i % ((path.size + 119) / 120).coerceAtLeast(1) == 0 }
+                    val online = briefly(15_000) { Overpass.alongPath(kind, thinned, radius) }
+                    if (online != null && alongKind == kind) alongHits = withContext(Dispatchers.Default) { AlongRoute.rank(route, traveled, online, radius) }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (alongKind == kind && alongHits.isEmpty()) alongFailed = true
+            } finally {
+                if (alongKind == kind) {
+                    alongLoading = false
+                    showAlongOnMap()
+                }
+            }
+        }
+    }
+
+    /** Adds [place] as a stop, in order along the route, which then goes past it. */
+    fun stopAlong(place: Place) {
+        val route = routes.getOrNull(routeIndex)
+        val at = route?.progress(place.lat, place.lon)?.traveled
+        val index = if (route == null || at == null) stops.size
+        else stops.indexOfFirst { route.progress(it.lat, it.lon).traveled > at }.takeIf { it >= 0 } ?: stops.size
+        stops = stops.toMutableList().apply { add(index, place) }
+        closeAlong()
+        Toast.makeText(context, "Going via ${place.name}", Toast.LENGTH_SHORT).show()
+    }
+
     fun downloadVisibleArea() {
         val m = map ?: return
         val bounds = m.projection.visibleRegion.latLngBounds
@@ -1016,6 +1094,31 @@ fun MapScreen(
                 val font = loaded.layers.filterIsInstance<SymbolLayer>()
                     .firstNotNullOfOrNull { (it.textFont.value as? Array<*>)?.filterIsInstance<String>()?.takeIf { f -> f.isNotEmpty() } }
                     ?.toTypedArray() ?: arrayOf("Noto Sans Regular")
+                fun labels(id: String, source: String) = SymbolLayer(id, source).withProperties(
+                    PropertyFactory.textField(Expression.get("name")),
+                    PropertyFactory.textFont(font),
+                    PropertyFactory.textSize(12.5f),
+                    PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                    PropertyFactory.textOffset(arrayOf(0f, 0.8f)),
+                    PropertyFactory.textMaxWidth(9f),
+                    PropertyFactory.textColor(colors.onSurface.toArgb()),
+                    PropertyFactory.textHaloColor(colors.surface.toArgb()),
+                    PropertyFactory.textHaloWidth(1.6f),
+                    PropertyFactory.symbolSortKey(Expression.get("order")),
+                )
+                // Places found along the route, in their own color, closest along the way labelled first.
+                loaded.addSource(GeoJsonSource(ALONG_SOURCE))
+                loaded.addLayer(
+                    CircleLayer(ALONG_LAYER, ALONG_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(
+                            Expression.switchCase(Expression.get("focus"), Expression.literal(10f), Expression.literal(7f))
+                        ),
+                        PropertyFactory.circleColor(colors.tertiary.toArgb()),
+                        PropertyFactory.circleStrokeWidth(2f),
+                        PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    )
+                )
+                loaded.addLayer(labels(ALONG_LABEL_LAYER, ALONG_SOURCE))
                 loaded.addLayer(
                     SymbolLayer(RESULTS_LABEL_LAYER, RESULTS_SOURCE).withProperties(
                         PropertyFactory.textField(Expression.get("name")),
@@ -1113,6 +1216,16 @@ fun MapScreen(
                 if (measure != null) aim = m.projection.fromScreenLocation(crosshair())
             }
             m.addOnMapClickListener { point ->
+                // A place found along the route: point it out in the list.
+                if (showAlong) {
+                    val p = m.projection.toScreenLocation(point)
+                    val slop = dp(16)
+                    m.queryRenderedFeatures(RectF(p.x - slop, p.y - slop, p.x + slop, p.y + slop), ALONG_LAYER).firstOrNull()
+                        ?.getNumberProperty("index")?.toInt()?.let { alongHits.getOrNull(it) }?.let {
+                            alongFocus = it.place
+                            return@addOnMapClickListener true
+                        }
+                }
                 // Tapping yourself while navigating picks what you drive.
                 val here = locationComponent()?.lastKnownLocation
                 if (navigating && here != null) {
@@ -1475,6 +1588,24 @@ fun MapScreen(
         )
     }
 
+    // Places found along the route, while that search is open.
+    LaunchedEffect(showAlong, alongHits, alongFocus, style) {
+        val source = style?.getSourceAs<GeoJsonSource>(ALONG_SOURCE) ?: return@LaunchedEffect
+        source.setGeoJson(
+            FeatureCollection.fromFeatures(
+                if (!showAlong) emptyList()
+                else alongHits.mapIndexed { i, hit ->
+                    Feature.fromGeometry(Point.fromLngLat(hit.place.lon, hit.place.lat)).apply {
+                        addNumberProperty("index", i)
+                        addNumberProperty("order", if (hit.place == alongFocus) -1 else i)
+                        addStringProperty("name", hit.place.name)
+                        addBooleanProperty("focus", hit.place == alongFocus)
+                    }
+                }
+            )
+        )
+    }
+
     // The open trip's stops and times, refreshed for live delays while it's shown, and right
     // away when the app comes back to the front.
     LaunchedEffect(openTrip, tripRequest) {
@@ -1784,8 +1915,9 @@ fun MapScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    BackHandler(enabled = !expanded && (measure != null || openTrip != null || navigating || directionsTo != null || selected != null || openListId != null || resultsOnMap)) {
+    BackHandler(enabled = !expanded && (showAlong || measure != null || openTrip != null || navigating || directionsTo != null || selected != null || openListId != null || resultsOnMap)) {
         when {
+            showAlong -> closeAlong()
             measure != null -> measure = null
             openTrip != null -> openTrip = null
             navigating -> stopNavigation()
@@ -2009,6 +2141,7 @@ fun MapScreen(
             // Place cards, routes, trips and the like.
             val panelContent: @Composable () -> Unit = {
                 val panel = when {
+                    showAlong && directionsTo != null && travelMode != TravelMode.Transit -> Panel.Along
                     directionsTo != null && navigating -> Panel.Navigation
                     measure != null -> Panel.Measure
                     openTrip != null -> Panel.Trip
@@ -2063,6 +2196,7 @@ fun MapScreen(
                                 onSettingsChange(settings.copy(voiceGuidance = !settings.voiceGuidance))
                             },
                             onEnd = ::stopNavigation,
+                            onSearchAlong = { showAlong = true },
                             modifier = panelModifier,
                         )
                         target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
@@ -2081,6 +2215,18 @@ fun MapScreen(
                             onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
                             modifier = panelModifier,
                         )
+                        target == Panel.Along -> AlongRoutePanel(
+                            mode = travelMode,
+                            kind = alongKind,
+                            hits = alongHits,
+                            loading = alongLoading,
+                            failed = alongFailed,
+                            focus = alongFocus,
+                            onSearch = ::searchAlong,
+                            onPick = ::stopAlong,
+                            onClose = ::closeAlong,
+                            modifier = panelModifier,
+                        )
                         target == Panel.Route && destination != null -> RoutePanel(
                             routes = routes,
                             selectedIndex = routeIndex,
@@ -2093,6 +2239,7 @@ fun MapScreen(
                             },
                             onStart = ::startNavigation,
                             onOpenElsewhere = { context.openDirections(destination) },
+                            onSearchAlong = { showAlong = true },
                             modifier = panelModifier,
                         )
                         target == Panel.List && lists.any { it.id == (openListId ?: lastListId) } -> {
