@@ -264,6 +264,10 @@ fun MapScreen(
     darkMap: Boolean,
     incoming: Uri?,
     onIncomingHandled: () -> Unit,
+    /** Shrunk to a picture-in-picture window: just the map and the next turn. */
+    pip: Boolean = false,
+    /** Navigation started or ended, so leaving the app can keep it going in a small window. */
+    onNavigatingChange: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -728,9 +732,9 @@ fun MapScreen(
                         near = PoiTiles.near(kind, center, further)
                     }
                     near
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
                     // Offline: whatever the map on screen has.
                     kindFromMap(kind, view)
                 }
@@ -1330,6 +1334,15 @@ fun MapScreen(
         } else {
             loadStyle(m, Style.Builder().fromUri(url))
         }
+    }
+
+    LaunchedEffect(navigating) { onNavigatingChange(navigating) }
+    // The driving view keeps the user low on screen by a padding in pixels, which in the small
+    // window (and back out of it) would be all wrong: set it up again for the new size.
+    LaunchedEffect(pip) {
+        if (!navigating || follow == Follow.Off) return@LaunchedEffect
+        delay(300)
+        followMe()
     }
 
     // A newly picked vehicle shows right away.
@@ -1965,547 +1978,560 @@ fun MapScreen(
                     modifier = Modifier.size(VehicleOverlay.SIZE_DP.dp),
                 )
             }
-
-            if (measure != null) {
-                // Aim with the map; the crosshair stays put. Same spot as crosshair() works out.
-                Box(Modifier.fillMaxSize().padding(start = if (wide) SIDE_PANEL_WIDTH + 16.dp else 0.dp)) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = null,
-                        tint = colors.onSurface,
-                        modifier = Modifier.align(Alignment.Center).size(36.dp),
+            if (pip) {
+                // The small window while navigating from another app: the next turn and speed.
+                val destination = directionsTo
+                if (navigating && destination != null) {
+                    PipBanner(
+                        route = routes.getOrNull(routeIndex),
+                        progress = progress,
+                        destination = destination,
+                        modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(6.dp),
                     )
+                    liveSpeed?.let { Speedometer(it, progress?.let { p -> speedLimits?.at(p.segment) }, Modifier.align(Alignment.BottomStart).padding(6.dp)) }
                 }
-            }
-
-            var showCredits by rememberSaveable { mutableStateOf(false) }
-            CreditsButton(
-                onClick = { showCredits = true },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .navigationBarsPadding()
-                    .padding(start = 4.dp, bottom = 4.dp),
-            )
-            if (showCredits) CreditsSheet(onDismiss = { showCredits = false })
-            if (showSettings) {
-                SettingsSheet(
-                    settings = settings,
-                    onChange = onSettingsChange,
-                    onClearHistory = if (recents.isNotEmpty()) ({
-                        RecentPlaces.clear(context)
-                        recents = emptyList()
-                    }) else null,
-                    shortcuts = shortcuts,
-                    onSetShortcut = { picking = if (it == Shortcut.Home) PickFor.Home else PickFor.Work },
-                    onClearShortcut = { shortcuts = Shortcuts.set(context, it, null) },
-                    offlineAreas = offline.areas,
-                    onDownloadArea = {
-                        showSettings = false
-                        downloadVisibleArea()
-                        Toast.makeText(context, "Downloading the map of this area", Toast.LENGTH_SHORT).show()
-                    },
-                    onDeleteArea = { offline.delete(it.id) },
-                    onExport = { exportLauncher.launch("saved-places.geojson") },
-                    onImport = { importLauncher.launch(arrayOf("application/geo+json", "application/json", "*/*")) },
-                    onDismiss = { showSettings = false },
-                )
-            }
-            picking?.let { purpose ->
-                PlacePicker(
-                    title = when (purpose) {
-                        PickFor.Stop -> "Add a stop"
-                        PickFor.Home -> "Set home"
-                        PickFor.Work -> "Set work"
-                        PickFor.Origin -> "Choose starting point"
-                        PickFor.Destination -> "Choose destination"
-                    },
-                    near = myLocation(),
-                    suggestions = (shortcuts.values + lists.flatMap { it.places } + recents).distinctBy { it.name to it.lat },
-                    onPick = { place ->
-                        picking = null
-                        when (purpose) {
-                            PickFor.Stop -> stops = stops + place
-                            PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
-                            PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
-                            PickFor.Origin -> directionsFrom = place
-                            PickFor.Destination -> {
-                                directionsTo = place
-                                lastDestination = place
-                            }
-                        }
-                    },
-                    onDismiss = { picking = null },
-                    onPickMyLocation = when (purpose) {
-                        PickFor.Origin -> ({ picking = null; directionsFrom = null })
-                        PickFor.Destination -> myLocation()?.let { here ->
-                            {
-                                picking = null
-                                directionsTo = Place("Your location", "", here.latitude, here.longitude, key = MY_LOCATION_KEY)
-                            }
-                        }
-                        else -> null
-                    },
-                )
-            }
-            savingPlace?.let { place ->
-                SaveToListSheet(
-                    place = place,
-                    lists = lists,
-                    onToggle = { lists = SavedPlaces.toggle(context, it.id, place) },
-                    onCreate = { lists = SavedPlaces.create(context, it, place) },
-                    onDismiss = { savingPlace = null },
-                )
-            }
-
-            // The layers button, with the compass under it when the map is turned or tilted.
-            Column(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = with(density) { topChromePx.toDp() } + 12.dp, end = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (!navigating) {
-                    SmallFloatingActionButton(
-                        onClick = { showLayers = true },
-                        containerColor = colors.surfaceContainerHigh,
-                        contentColor = colors.primary,
-                    ) {
-                        Icon(Icons.Outlined.Layers, contentDescription = "Layers")
+            } else {
+                if (measure != null) {
+                    // Aim with the map; the crosshair stays put. Same spot as crosshair() works out.
+                    Box(Modifier.fillMaxSize().padding(start = if (wide) SIDE_PANEL_WIDTH + 16.dp else 0.dp)) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = colors.onSurface,
+                            modifier = Modifier.align(Alignment.Center).size(36.dp),
+                        )
                     }
                 }
-                AnimatedVisibility(
-                    visible = compassVisible,
-                    enter = fadeIn() + scaleIn(),
-                    exit = fadeOut() + scaleOut(),
-                ) {
-                    Compass(bearing = { bearing }, onClick = ::pointNorth)
-                }
-            }
-            if (showVehicles) {
-                VehicleSheet(
-                    selected = settings.vehicle,
-                    onSelect = { onSettingsChange(settings.copy(vehicle = it)) },
-                    onDismiss = { showVehicles = false },
-                )
-            }
-            if (showLayers) {
-                LayersSheet(settings = settings, onChange = onSettingsChange, onDismiss = { showLayers = false })
-            }
 
-            val following = follow != Follow.Off
-            // The location and navigation buttons, over the map.
-            val mapButtons: @Composable () -> Unit = {
-                if (navigating && directionsTo != null) {
-                    // Like a car navigation app: see the whole route, then jump back to the driving view.
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            val limit = progress?.let { p -> speedLimits?.at(p.segment) }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                limit?.let { SpeedLimitSign(it) }
-                                liveSpeed?.let { Speedometer(it, limit) }
-                            }
-                            AnimatedVisibility(
-                                visible = !following,
-                                enter = fadeIn() + scaleIn(),
-                                exit = fadeOut() + scaleOut(),
-                            ) {
-                                ExtendedFloatingActionButton(
-                                    onClick = ::followMe,
-                                    icon = { Icon(Icons.Filled.Navigation, contentDescription = null) },
-                                    text = { Text("Re-center") },
-                                    containerColor = colors.surfaceContainerHigh,
-                                    contentColor = colors.primary,
-                                )
-                            }
-                        }
-                        Spacer(Modifier.weight(1f))
-                        FloatingActionButton(
-                            onClick = ::toggleRouteOverview,
-                            containerColor = if (overview) colors.primaryContainer else colors.surfaceContainerHigh,
-                        ) {
-                            Icon(
-                                Icons.Filled.Route,
-                                contentDescription = "Route overview",
-                                tint = if (overview) colors.onPrimaryContainer else colors.primary,
-                            )
-                        }
-                    }
-                } else FloatingActionButton(
-                    onClick = {
-                        if (hasLocationPermission) onLocateClick()
-                        else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                    },
-                    containerColor = if (following) colors.primaryContainer else colors.surfaceContainerHigh,
-                ) {
-                    Icon(
-                        when (follow) {
-                            Follow.Off -> Icons.Filled.LocationSearching
-                            Follow.Compass -> Icons.Filled.Explore
-                            else -> Icons.Filled.MyLocation
-                        },
-                        contentDescription = "My location",
-                        tint = if (following) colors.onPrimaryContainer else colors.primary,
-                    )
-                }
-            }
-            // Place cards, routes, trips and the like.
-            val panelContent: @Composable () -> Unit = {
-                val panel = when {
-                    showAlong && directionsTo != null && travelMode != TravelMode.Transit -> Panel.Along
-                    directionsTo != null && navigating -> Panel.Navigation
-                    measure != null -> Panel.Measure
-                    openTrip != null -> Panel.Trip
-                    directionsTo != null -> Panel.Route
-                    selected != null -> Panel.Place
-                    openListId != null -> Panel.List
-                    resultsOnMap && mapResults.size > 1 -> Panel.Results
-                    else -> Panel.None
-                }
-                // Animating the panel's size makes the location button glide up and down with it.
-                AnimatedContent(
-                    targetState = panel,
-                    transitionSpec = {
-                        (slideInVertically { it / 2 } + fadeIn()) togetherWith (slideOutVertically { it / 2 } + fadeOut()) using
-                            SizeTransform(clip = false)
-                    },
-                    contentAlignment = Alignment.BottomCenter,
-                    label = "bottomPanel",
-                ) { target ->
-                    // Fall back to the last values so panels keep their content while animating out.
-                    val destination = directionsTo ?: lastDestination
-                    val place = selected ?: lastShownPlace
-                    val shownResults = mapResults
-                    val panelModifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp)
-                        .animateContentSize()
-                    when {
-                        target == Panel.Measure -> MeasurePanel(
-                            points = measure ?: lastMeasure,
-                            aim = aim,
-                            onAdd = { aim?.let { a -> measure = measure.orEmpty() + a } },
-                            onUndo = { measure = measure?.dropLast(1)?.takeIf { it.isNotEmpty() } ?: measure },
-                            onClose = { measure = null },
-                            modifier = panelModifier,
-                        )
-                        target == Panel.Trip && (openTrip ?: lastTrip) != null -> TripPanel(
-                            ref = openTrip ?: lastTrip!!,
-                            trip = trip,
-                            now = tripNow,
-                            error = tripError,
-                            onBack = { openTrip = null },
-                            onRetry = { tripRequest++ },
-                            modifier = panelModifier,
-                        )
-                        target == Panel.Navigation && destination != null -> NavigationPanel(
-                            route = routes.getOrNull(routeIndex),
-                            progress = progress,
-                            muted = !settings.voiceGuidance,
-                            onToggleMute = {
-                                if (settings.voiceGuidance) voice.stop()
-                                onSettingsChange(settings.copy(voiceGuidance = !settings.voiceGuidance))
-                            },
-                            onEnd = ::stopNavigation,
-                            onSearchAlong = { showAlong = true },
-                            modifier = panelModifier,
-                        )
-                        target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
-                            itineraries = itineraries,
-                            selected = itineraryIndex,
-                            onSelect = { itineraryIndex = it },
-                            tripTime = tripTime,
-                            onTripTimeChange = { tripTime = it },
-                            loading = routing,
-                            error = routeError,
-                            onRetry = {
-                                if (hasLocationPermission) routeRequest++
-                                else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                            },
-                            onLater = if (transitNextPage != null) ::loadLaterConnections else null,
-                            onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
-                            modifier = panelModifier,
-                        )
-                        target == Panel.Along -> AlongRoutePanel(
-                            mode = travelMode,
-                            kind = alongKind,
-                            hits = alongHits,
-                            loading = alongLoading,
-                            failed = alongFailed,
-                            focus = alongFocus,
-                            onSearch = ::searchAlong,
-                            onPick = ::stopAlong,
-                            onClose = ::closeAlong,
-                            modifier = panelModifier,
-                        )
-                        target == Panel.Route && destination != null -> RoutePanel(
-                            routes = routes,
-                            selectedIndex = routeIndex,
-                            onSelect = { routeIndex = it },
-                            loading = routing,
-                            error = routeError,
-                            onRetry = {
-                                if (hasLocationPermission) routeRequest++
-                                else permissionLauncher.launch(LOCATION_PERMISSIONS)
-                            },
-                            onStart = ::startNavigation,
-                            onOpenElsewhere = { context.openDirections(destination) },
-                            onSearchAlong = { showAlong = true },
-                            modifier = panelModifier,
-                        )
-                        target == Panel.List && lists.any { it.id == (openListId ?: lastListId) } -> {
-                            val list = lists.first { it.id == (openListId ?: lastListId) }
-                            PlaceListPanel(
-                                list = list,
-                                here = myLocation(),
-                                onSelect = { select(it) },
-                                onRemove = {
-                                    lists = SavedPlaces.remove(context, list.id, it)
-                                    mapResults = mapResults.filterNot { p -> p.isSameAs(it) }
-                                },
-                                onRename = { lists = SavedPlaces.rename(context, list.id, it) },
-                                onDelete = {
-                                    closeList()
-                                    lists = SavedPlaces.delete(context, list.id)
-                                },
-                                onClose = ::closeList,
-                                modifier = panelModifier,
-                            )
-                        }
-                        target == Panel.Results && shownResults.isNotEmpty() -> ResultsPanel(
-                            title = resultsFor.ifBlank { "Results" },
-                            places = shownResults,
-                            here = myLocation(),
-                            from = myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: map?.cameraPosition?.target,
-                            onSelect = { select(it, zoom = null) },
-                            onClose = { resultsOnMap = false },
-                            // Up to just under the search bar.
-                            maxHeight = configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - 8.dp +
-                                WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
-                            // A sheet from the bottom edge on phones; in the side column, a card like the others.
-                            modifier = if (wide) Modifier.fillMaxWidth().padding(top = 16.dp)
-                            else Modifier
-                                .fillMaxWidth()
-                                .padding(top = 16.dp)
-                                .bleed(horizontal = 16.dp, bottom = 16.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
-                        )
-                        target == Panel.Place && place != null -> PlaceCard(
-                            place,
-                            saved = lists.containing(place).isNotEmpty(),
-                            details = details,
-                            wiki = wiki,
-                            loading = detailsLoading,
-                            onSave = { savingPlace = place },
-                            onMeasure = { startMeasuring(place) },
-                            onDirections = { startDirections(place) },
-                            onClose = { selected = null },
-                            modifier = panelModifier,
-                            departures = if (place.departureRadius() != null) {
-                                {
-                                DepartureBoard(
-                                    departures, departuresLoading,
-                                    onOpenTrip = { d -> d.tripRef()?.let(::showTrip) },
-                                    modifier = Modifier.padding(top = 16.dp, end = 12.dp),
-                                )
-                            }
-                            } else null,
-                        )
-                        else -> Spacer(Modifier.fillMaxWidth())
-                    }
-                }
-            }
-            if (wide) {
-                // Side by side: the panel in a column on the left, the buttons over the map beside it.
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(start = SIDE_PANEL_WIDTH + 32.dp, end = 16.dp, bottom = 16.dp),
-                    horizontalAlignment = Alignment.End,
-                ) { mapButtons() }
-                Column(
+                var showCredits by rememberSaveable { mutableStateOf(false) }
+                CreditsButton(
+                    onClick = { showCredits = true },
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .navigationBarsPadding()
-                        .padding(start = 16.dp, bottom = 16.dp)
-                        .width(SIDE_PANEL_WIDTH),
-                ) { panelContent() }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.End,
-                ) {
-                    mapButtons()
-                    panelContent()
+                        .padding(start = 4.dp, bottom = 4.dp),
+                )
+                if (showCredits) CreditsSheet(onDismiss = { showCredits = false })
+                if (showSettings) {
+                    SettingsSheet(
+                        settings = settings,
+                        onChange = onSettingsChange,
+                        onClearHistory = if (recents.isNotEmpty()) ({
+                            RecentPlaces.clear(context)
+                            recents = emptyList()
+                        }) else null,
+                        shortcuts = shortcuts,
+                        onSetShortcut = { picking = if (it == Shortcut.Home) PickFor.Home else PickFor.Work },
+                        onClearShortcut = { shortcuts = Shortcuts.set(context, it, null) },
+                        offlineAreas = offline.areas,
+                        onDownloadArea = {
+                            showSettings = false
+                            downloadVisibleArea()
+                            Toast.makeText(context, "Downloading the map of this area", Toast.LENGTH_SHORT).show()
+                        },
+                        onDeleteArea = { offline.delete(it.id) },
+                        onExport = { exportLauncher.launch("saved-places.geojson") },
+                        onImport = { importLauncher.launch(arrayOf("application/geo+json", "application/json", "*/*")) },
+                        onDismiss = { showSettings = false },
+                    )
                 }
-            }
+                picking?.let { purpose ->
+                    PlacePicker(
+                        title = when (purpose) {
+                            PickFor.Stop -> "Add a stop"
+                            PickFor.Home -> "Set home"
+                            PickFor.Work -> "Set work"
+                            PickFor.Origin -> "Choose starting point"
+                            PickFor.Destination -> "Choose destination"
+                        },
+                        near = myLocation(),
+                        suggestions = (shortcuts.values + lists.flatMap { it.places } + recents).distinctBy { it.name to it.lat },
+                        onPick = { place ->
+                            picking = null
+                            when (purpose) {
+                                PickFor.Stop -> stops = stops + place
+                                PickFor.Home -> shortcuts = Shortcuts.set(context, Shortcut.Home, place)
+                                PickFor.Work -> shortcuts = Shortcuts.set(context, Shortcut.Work, place)
+                                PickFor.Origin -> directionsFrom = place
+                                PickFor.Destination -> {
+                                    directionsTo = place
+                                    lastDestination = place
+                                }
+                            }
+                        },
+                        onDismiss = { picking = null },
+                        onPickMyLocation = when (purpose) {
+                            PickFor.Origin -> ({ picking = null; directionsFrom = null })
+                            PickFor.Destination -> myLocation()?.let { here ->
+                                {
+                                    picking = null
+                                    directionsTo = Place("Your location", "", here.latitude, here.longitude, key = MY_LOCATION_KEY)
+                                }
+                            }
+                            else -> null
+                        },
+                    )
+                }
+                savingPlace?.let { place ->
+                    SaveToListSheet(
+                        place = place,
+                        lists = lists,
+                        onToggle = { lists = SavedPlaces.toggle(context, it.id, place) },
+                        onCreate = { lists = SavedPlaces.create(context, it, place) },
+                        onDismiss = { savingPlace = null },
+                    )
+                }
 
-            val destination = directionsTo
-            // Bars at the top span the screen, or the side column on wide screens.
-            val topWidth = if (wide) Modifier.width(SIDE_PANEL_WIDTH) else Modifier.fillMaxWidth()
-            when {
-                destination != null && navigating -> NavigationBanner(
-                    route = routes.getOrNull(routeIndex),
-                    progress = progress,
-                    destination = destination,
-                    rerouting = routing,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .then(topWidth)
-                        .then(trackTop),
-                )
-                destination != null -> DirectionsHeader(
-                    origin = directionsFrom,
-                    destination = destination,
-                    onChangeOrigin = { picking = PickFor.Origin },
-                    onChangeDestination = { picking = PickFor.Destination },
-                    onSwap = {
-                        val here = myLocation()
-                        // From the user's location, the swap needs to know where that is.
-                        if (directionsFrom != null || here != null) {
-                            val newTo = directionsFrom ?: Place("Your location", "", here!!.latitude, here.longitude, key = MY_LOCATION_KEY)
-                            directionsFrom = destination.takeUnless { it.key == MY_LOCATION_KEY }
-                            directionsTo = newTo
-                            stops = stops.reversed()
+                // The layers button, with the compass under it when the map is turned or tilted.
+                Column(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = with(density) { topChromePx.toDp() } + 12.dp, end = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (!navigating) {
+                        SmallFloatingActionButton(
+                            onClick = { showLayers = true },
+                            containerColor = colors.surfaceContainerHigh,
+                            contentColor = colors.primary,
+                        ) {
+                            Icon(Icons.Outlined.Layers, contentDescription = "Layers")
                         }
-                    },
-                    mode = travelMode,
-                    onModeChange = { travelMode = it },
-                    onBack = ::exitDirections,
-                    stops = stops,
-                    onAddStop = { picking = PickFor.Stop },
-                    onRemoveStop = { stop -> stops = stops - stop },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .then(topWidth)
-                        .then(trackTop),
-                )
-                else -> {
-                    val sidePadding by animateDpAsState(if (expanded) 0.dp else 16.dp, label = "searchPadding")
-                    // Chips under the bar while just looking at the map; they then mark the top's edge.
-                    val showChips = !expanded && selected == null && openListId == null && settings.quickButtons.isNotEmpty()
-                    var searchBottomPx by remember { mutableIntStateOf(0) }
-                    if (showChips) {
-                        QuickChips(
-                            buttons = settings.quickButtons.mapNotNull { QuickButton.byId(it) },
-                            shortcuts = shortcuts,
-                            loading = categoryLoading,
-                            onShortcut = ::onShortcut,
-                            onCategory = ::showCategory,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(top = with(density) { searchBottomPx.toDp() } + 8.dp)
-                                .then(if (wide) Modifier.width(SIDE_PANEL_WIDTH + 32.dp) else Modifier)
-                                .then(trackTop),
+                    }
+                    AnimatedVisibility(
+                        visible = compassVisible,
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut(),
+                    ) {
+                        Compass(bearing = { bearing }, onClick = ::pointNorth)
+                    }
+                }
+            if (showVehicles) {
+                    VehicleSheet(
+                        selected = settings.vehicle,
+                        onSelect = { onSettingsChange(settings.copy(vehicle = it)) },
+                        onDismiss = { showVehicles = false },
+                    )
+                }
+                if (showLayers) {
+                    LayersSheet(settings = settings, onChange = onSettingsChange, onDismiss = { showLayers = false })
+                }
+
+                val following = follow != Follow.Off
+                // The location and navigation buttons, over the map.
+                val mapButtons: @Composable () -> Unit = {
+                    if (navigating && directionsTo != null) {
+                        // Like a car navigation app: see the whole route, then jump back to the driving view.
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                val limit = progress?.let { p -> speedLimits?.at(p.segment) }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    limit?.let { SpeedLimitSign(it) }
+                                    liveSpeed?.let { Speedometer(it, limit) }
+                                }
+                                AnimatedVisibility(
+                                    visible = !following,
+                                    enter = fadeIn() + scaleIn(),
+                                    exit = fadeOut() + scaleOut(),
+                                ) {
+                                    ExtendedFloatingActionButton(
+                                        onClick = ::followMe,
+                                        icon = { Icon(Icons.Filled.Navigation, contentDescription = null) },
+                                        text = { Text("Re-center") },
+                                        containerColor = colors.surfaceContainerHigh,
+                                        contentColor = colors.primary,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.weight(1f))
+                            FloatingActionButton(
+                                onClick = ::toggleRouteOverview,
+                                containerColor = if (overview) colors.primaryContainer else colors.surfaceContainerHigh,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Route,
+                                    contentDescription = "Route overview",
+                                    tint = if (overview) colors.onPrimaryContainer else colors.primary,
+                                )
+                            }
+                        }
+                    } else FloatingActionButton(
+                        onClick = {
+                            if (hasLocationPermission) onLocateClick()
+                            else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                        },
+                        containerColor = if (following) colors.primaryContainer else colors.surfaceContainerHigh,
+                    ) {
+                        Icon(
+                            when (follow) {
+                                Follow.Off -> Icons.Filled.LocationSearching
+                                Follow.Compass -> Icons.Filled.Explore
+                                else -> Icons.Filled.MyLocation
+                            },
+                            contentDescription = "My location",
+                            tint = if (following) colors.onPrimaryContainer else colors.primary,
                         )
                     }
-                    SearchBar(
-                        modifier = Modifier
-                            .align(if (wide && !expanded) Alignment.TopStart else Alignment.TopCenter)
-                            .padding(horizontal = sidePadding)
-                            .then(if (wide && !expanded) Modifier.width(SIDE_PANEL_WIDTH) else Modifier)
-                            .onGloballyPositioned { if (!expanded) searchBottomPx = it.boundsInRoot().bottom.toInt() }
-                            .then(if (showChips) Modifier else trackTop),
-                        inputField = {
-                            SearchBarDefaults.InputField(
-                                query = query,
-                                onQueryChange = {
-                                    query = it
-                                    kindQuery = null
-                                    resultsOnMap = false
-                                },
-                                onSearch = {
-                                    // "supermarket": all of them nearby, not places called that.
-                                    val kind = kindMatches.firstOrNull()?.takeIf { it.second >= PlaceKinds.SURE }?.first
-                                    if (kind != null && query.trim() != kindQuery) showKind(kind) else showResultsOnMap()
-                                },
-                                expanded = expanded,
-                                onExpandedChange = { expanded = it },
-                                placeholder = { Text("Search here") },
-                                leadingIcon = {
-                                    if (expanded) {
-                                        IconButton(onClick = { expanded = false }) {
-                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                                        }
-                                    } else {
-                                        Icon(Icons.Filled.Search, contentDescription = null)
-                                    }
-                                },
-                                trailingIcon = {
-                                    if (query.isNotEmpty()) {
-                                        IconButton(onClick = {
-                                            query = ""
-                                            resultsOnMap = false
-                                            selected = null
-                                        }) {
-                                            Icon(Icons.Filled.Close, contentDescription = "Clear")
-                                        }
-                                    } else {
-                                        IconButton(onClick = { showSettings = true }) {
-                                            Icon(Icons.Outlined.Settings, contentDescription = "Settings")
-                                        }
-                                    }
-                                },
-                            )
+                }
+                // Place cards, routes, trips and the like.
+                val panelContent: @Composable () -> Unit = {
+                    val panel = when {
+                        showAlong && directionsTo != null && travelMode != TravelMode.Transit -> Panel.Along
+                        directionsTo != null && navigating -> Panel.Navigation
+                        measure != null -> Panel.Measure
+                        openTrip != null -> Panel.Trip
+                        directionsTo != null -> Panel.Route
+                        selected != null -> Panel.Place
+                        openListId != null -> Panel.List
+                        resultsOnMap && mapResults.size > 1 -> Panel.Results
+                        else -> Panel.None
+                    }
+                    // Animating the panel's size makes the location button glide up and down with it.
+                    AnimatedContent(
+                        targetState = panel,
+                        transitionSpec = {
+                            (slideInVertically { it / 2 } + fadeIn()) togetherWith (slideOutVertically { it / 2 } + fadeOut()) using
+                                SizeTransform(clip = false)
                         },
-                        expanded = expanded,
-                        onExpandedChange = { expanded = it },
-                        shadowElevation = if (expanded) 0.dp else 4.dp,
-                    ) {
-                        val q = query.trim()
-                        // Reserve the bar's height so results don't jump when it appears.
-                        if (searching && q.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        else Spacer(Modifier.height(4.dp))
-                        val here = myLocation()
+                        contentAlignment = Alignment.BottomCenter,
+                        label = "bottomPanel",
+                    ) { target ->
+                        // Fall back to the last values so panels keep their content while animating out.
+                        val destination = directionsTo ?: lastDestination
+                        val place = selected ?: lastShownPlace
+                        val shownResults = mapResults
+                        val panelModifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp)
+                            .animateContentSize()
                         when {
-                            q.isEmpty() -> Column(Modifier.verticalScroll(rememberScrollState())) {
-                                if (savedStops.isNotEmpty()) {
-                                    Text(
-                                        "Your stops",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = colors.onSurfaceVariant,
-                                        modifier = Modifier.padding(start = 16.dp, top = 8.dp),
-                                    )
-                                    savedStops.take(4).forEach { stop ->
-                                        SavedStopDepartures(stop, savedStopDepartures[stop], onOpenTrip = { d ->
-                                            d.tripRef()?.let {
-                                                expanded = false
-                                                showTrip(it)
-                                            }
-                                        })
-                                    }
-                                }
-                                SavedListsSection(lists, onOpen = ::openList)
-                                if (recents.isNotEmpty()) RecentsSection(recents, here, onPick = ::pickResult, onClear = {
-                                    RecentPlaces.clear(context)
-                                    recents = emptyList()
-                                })
+                            target == Panel.Measure -> MeasurePanel(
+                                points = measure ?: lastMeasure,
+                                aim = aim,
+                                onAdd = { aim?.let { a -> measure = measure.orEmpty() + a } },
+                                onUndo = { measure = measure?.dropLast(1)?.takeIf { it.isNotEmpty() } ?: measure },
+                                onClose = { measure = null },
+                                modifier = panelModifier,
+                            )
+                            target == Panel.Trip && (openTrip ?: lastTrip) != null -> TripPanel(
+                                ref = openTrip ?: lastTrip!!,
+                                trip = trip,
+                                now = tripNow,
+                                error = tripError,
+                                onBack = { openTrip = null },
+                                onRetry = { tripRequest++ },
+                                modifier = panelModifier,
+                            )
+                            target == Panel.Navigation && destination != null -> NavigationPanel(
+                                route = routes.getOrNull(routeIndex),
+                                progress = progress,
+                                muted = !settings.voiceGuidance,
+                                onToggleMute = {
+                                    if (settings.voiceGuidance) voice.stop()
+                                    onSettingsChange(settings.copy(voiceGuidance = !settings.voiceGuidance))
+                                },
+                                onEnd = ::stopNavigation,
+                                onSearchAlong = { showAlong = true },
+                                modifier = panelModifier,
+                            )
+                            target == Panel.Route && destination != null && travelMode == TravelMode.Transit -> TransitPanel(
+                                itineraries = itineraries,
+                                selected = itineraryIndex,
+                                onSelect = { itineraryIndex = it },
+                                tripTime = tripTime,
+                                onTripTimeChange = { tripTime = it },
+                                loading = routing,
+                                error = routeError,
+                                onRetry = {
+                                    if (hasLocationPermission) routeRequest++
+                                    else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                                },
+                                onLater = if (transitNextPage != null) ::loadLaterConnections else null,
+                                onOpenTrip = { leg -> leg.tripRef()?.let(::showTrip) },
+                                modifier = panelModifier,
+                            )
+                            target == Panel.Along -> AlongRoutePanel(
+                                mode = travelMode,
+                                kind = alongKind,
+                                hits = alongHits,
+                                loading = alongLoading,
+                                failed = alongFailed,
+                                focus = alongFocus,
+                                onSearch = ::searchAlong,
+                                onPick = ::stopAlong,
+                                onClose = ::closeAlong,
+                                modifier = panelModifier,
+                            )
+                            target == Panel.Route && destination != null -> RoutePanel(
+                                routes = routes,
+                                selectedIndex = routeIndex,
+                                onSelect = { routeIndex = it },
+                                loading = routing,
+                                error = routeError,
+                                onRetry = {
+                                    if (hasLocationPermission) routeRequest++
+                                    else permissionLauncher.launch(LOCATION_PERMISSIONS)
+                                },
+                                onStart = ::startNavigation,
+                                onOpenElsewhere = { context.openDirections(destination) },
+                                onSearchAlong = { showAlong = true },
+                                modifier = panelModifier,
+                            )
+                            target == Panel.List && lists.any { it.id == (openListId ?: lastListId) } -> {
+                                val list = lists.first { it.id == (openListId ?: lastListId) }
+                                PlaceListPanel(
+                                    list = list,
+                                    here = myLocation(),
+                                    onSelect = { select(it) },
+                                    onRemove = {
+                                        lists = SavedPlaces.remove(context, list.id, it)
+                                        mapResults = mapResults.filterNot { p -> p.isSameAs(it) }
+                                    },
+                                    onRename = { lists = SavedPlaces.rename(context, list.id, it) },
+                                    onDelete = {
+                                        closeList()
+                                        lists = SavedPlaces.delete(context, list.id)
+                                    },
+                                    onClose = ::closeList,
+                                    modifier = panelModifier,
+                                )
                             }
-                            searchFailed && results.isEmpty() && kindMatches.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
-                            results.isEmpty() && resultsFor == q && !searching && kindMatches.isEmpty() -> SearchHint("No results for \"$q\"")
-                            else -> LazyColumn {
-                                // Kinds of places first: "Supermarket · nearby" shows them all.
-                                if (q != kindQuery) items(kindMatches.map { it.first }) { kind ->
-                                    KindRow(kind, loading = kindLoading == kind, onClick = { showKind(kind) })
-                                }
-                                if (results.size > 1) item {
-                                    AssistChip(
-                                        onClick = ::showResultsOnMap,
-                                        label = { Text("Show all on map") },
-                                        leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                        modifier = Modifier.padding(horizontal = 16.dp),
+                            target == Panel.Results && shownResults.isNotEmpty() -> ResultsPanel(
+                                title = resultsFor.ifBlank { "Results" },
+                                places = shownResults,
+                                here = myLocation(),
+                                from = myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: map?.cameraPosition?.target,
+                                onSelect = { select(it, zoom = null) },
+                                onClose = { resultsOnMap = false },
+                                // Up to just under the search bar.
+                                maxHeight = configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - 8.dp +
+                                    WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+                                // A sheet from the bottom edge on phones; in the side column, a card like the others.
+                                modifier = if (wide) Modifier.fillMaxWidth().padding(top = 16.dp)
+                                else Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 16.dp)
+                                    .bleed(horizontal = 16.dp, bottom = 16.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
+                            )
+                            target == Panel.Place && place != null -> PlaceCard(
+                                place,
+                                saved = lists.containing(place).isNotEmpty(),
+                                details = details,
+                                wiki = wiki,
+                                loading = detailsLoading,
+                                onSave = { savingPlace = place },
+                                onMeasure = { startMeasuring(place) },
+                                onDirections = { startDirections(place) },
+                                onClose = { selected = null },
+                                modifier = panelModifier,
+                                departures = if (place.departureRadius() != null) {
+                                    {
+                                    DepartureBoard(
+                                        departures, departuresLoading,
+                                        onOpenTrip = { d -> d.tripRef()?.let(::showTrip) },
+                                        modifier = Modifier.padding(top = 16.dp, end = 12.dp),
                                     )
                                 }
-                                items(results) { place ->
-                                    PlaceRow(place, here, onClick = { pickResult(place) })
+                                } else null,
+                            )
+                            else -> Spacer(Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+                if (wide) {
+                    // Side by side: the panel in a column on the left, the buttons over the map beside it.
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(start = SIDE_PANEL_WIDTH + 32.dp, end = 16.dp, bottom = 16.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) { mapButtons() }
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .navigationBarsPadding()
+                            .padding(start = 16.dp, bottom = 16.dp)
+                            .width(SIDE_PANEL_WIDTH),
+                    ) { panelContent() }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) {
+                        mapButtons()
+                        panelContent()
+                    }
+                }
+
+                val destination = directionsTo
+                // Bars at the top span the screen, or the side column on wide screens.
+                val topWidth = if (wide) Modifier.width(SIDE_PANEL_WIDTH) else Modifier.fillMaxWidth()
+                when {
+                    destination != null && navigating -> NavigationBanner(
+                        route = routes.getOrNull(routeIndex),
+                        progress = progress,
+                        destination = destination,
+                        rerouting = routing,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .then(topWidth)
+                            .then(trackTop),
+                    )
+                    destination != null -> DirectionsHeader(
+                        origin = directionsFrom,
+                        destination = destination,
+                        onChangeOrigin = { picking = PickFor.Origin },
+                        onChangeDestination = { picking = PickFor.Destination },
+                        onSwap = {
+                            val here = myLocation()
+                            // From the user's location, the swap needs to know where that is.
+                            if (directionsFrom != null || here != null) {
+                                val newTo = directionsFrom ?: Place("Your location", "", here!!.latitude, here.longitude, key = MY_LOCATION_KEY)
+                                directionsFrom = destination.takeUnless { it.key == MY_LOCATION_KEY }
+                                directionsTo = newTo
+                                stops = stops.reversed()
+                            }
+                        },
+                        mode = travelMode,
+                        onModeChange = { travelMode = it },
+                        onBack = ::exitDirections,
+                        stops = stops,
+                        onAddStop = { picking = PickFor.Stop },
+                        onRemoveStop = { stop -> stops = stops - stop },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .then(topWidth)
+                            .then(trackTop),
+                    )
+                    else -> {
+                        val sidePadding by animateDpAsState(if (expanded) 0.dp else 16.dp, label = "searchPadding")
+                        // Chips under the bar while just looking at the map; they then mark the top's edge.
+                        val showChips = !expanded && selected == null && openListId == null && settings.quickButtons.isNotEmpty()
+                        var searchBottomPx by remember { mutableIntStateOf(0) }
+                        if (showChips) {
+                            QuickChips(
+                                buttons = settings.quickButtons.mapNotNull { QuickButton.byId(it) },
+                                shortcuts = shortcuts,
+                                loading = categoryLoading,
+                                onShortcut = ::onShortcut,
+                                onCategory = ::showCategory,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(top = with(density) { searchBottomPx.toDp() } + 8.dp)
+                                    .then(if (wide) Modifier.width(SIDE_PANEL_WIDTH + 32.dp) else Modifier)
+                                    .then(trackTop),
+                            )
+                        }
+                        SearchBar(
+                            modifier = Modifier
+                                .align(if (wide && !expanded) Alignment.TopStart else Alignment.TopCenter)
+                                .padding(horizontal = sidePadding)
+                                .then(if (wide && !expanded) Modifier.width(SIDE_PANEL_WIDTH) else Modifier)
+                                .onGloballyPositioned { if (!expanded) searchBottomPx = it.boundsInRoot().bottom.toInt() }
+                                .then(if (showChips) Modifier else trackTop),
+                            inputField = {
+                                SearchBarDefaults.InputField(
+                                    query = query,
+                                    onQueryChange = {
+                                        query = it
+                                        kindQuery = null
+                                        resultsOnMap = false
+                                    },
+                                    onSearch = {
+                                        // "supermarket": all of them nearby, not places called that.
+                                        val kind = kindMatches.firstOrNull()?.takeIf { it.second >= PlaceKinds.SURE }?.first
+                                        if (kind != null && query.trim() != kindQuery) showKind(kind) else showResultsOnMap()
+                                    },
+                                    expanded = expanded,
+                                    onExpandedChange = { expanded = it },
+                                    placeholder = { Text("Search here") },
+                                    leadingIcon = {
+                                        if (expanded) {
+                                            IconButton(onClick = { expanded = false }) {
+                                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                            }
+                                        } else {
+                                            Icon(Icons.Filled.Search, contentDescription = null)
+                                        }
+                                    },
+                                    trailingIcon = {
+                                        if (query.isNotEmpty()) {
+                                            IconButton(onClick = {
+                                                query = ""
+                                                resultsOnMap = false
+                                                selected = null
+                                            }) {
+                                                Icon(Icons.Filled.Close, contentDescription = "Clear")
+                                            }
+                                        } else {
+                                            IconButton(onClick = { showSettings = true }) {
+                                                Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                                            }
+                                        }
+                                    },
+                                )
+                            },
+                            expanded = expanded,
+                            onExpandedChange = { expanded = it },
+                            shadowElevation = if (expanded) 0.dp else 4.dp,
+                        ) {
+                            val q = query.trim()
+                            // Reserve the bar's height so results don't jump when it appears.
+                            if (searching && q.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+                            else Spacer(Modifier.height(4.dp))
+                            val here = myLocation()
+                            when {
+                                q.isEmpty() -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                                    if (savedStops.isNotEmpty()) {
+                                        Text(
+                                            "Your stops",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = colors.onSurfaceVariant,
+                                            modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+                                        )
+                                        savedStops.take(4).forEach { stop ->
+                                            SavedStopDepartures(stop, savedStopDepartures[stop], onOpenTrip = { d ->
+                                                d.tripRef()?.let {
+                                                    expanded = false
+                                                    showTrip(it)
+                                                }
+                                            })
+                                        }
+                                    }
+                                    SavedListsSection(lists, onOpen = ::openList)
+                                    if (recents.isNotEmpty()) RecentsSection(recents, here, onPick = ::pickResult, onClear = {
+                                        RecentPlaces.clear(context)
+                                        recents = emptyList()
+                                    })
+                                }
+                                searchFailed && results.isEmpty() && kindMatches.isEmpty() -> SearchHint("Couldn't reach the search service. Check your connection.")
+                                results.isEmpty() && resultsFor == q && !searching && kindMatches.isEmpty() -> SearchHint("No results for \"$q\"")
+                                else -> LazyColumn {
+                                    // Kinds of places first: "Supermarket · nearby" shows them all.
+                                    if (q != kindQuery) items(kindMatches.map { it.first }) { kind ->
+                                        KindRow(kind, loading = kindLoading == kind, onClick = { showKind(kind) })
+                                    }
+                                    if (results.size > 1) item {
+                                        AssistChip(
+                                            onClick = ::showResultsOnMap,
+                                            label = { Text("Show all on map") },
+                                            leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                        )
+                                    }
+                                    items(results) { place ->
+                                        PlaceRow(place, here, onClick = { pickResult(place) })
+                                    }
                                 }
                             }
                         }

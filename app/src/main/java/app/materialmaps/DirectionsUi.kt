@@ -223,6 +223,38 @@ fun Speedometer(metersPerSecond: Float, limitKmh: Int?, modifier: Modifier = Mod
     }
 }
 
+/** Navigation in the small picture-in-picture window: just the next turn, over the map. */
+@Composable
+fun PipBanner(route: Route?, progress: RouteProgress?, destination: Place, modifier: Modifier = Modifier) {
+    val next = progress?.next ?: route?.maneuvers?.firstOrNull()
+    val arrived = progress?.arrived == true
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+    ) {
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (arrived) Icons.Filled.Flag else maneuverIcon(next), contentDescription = null, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(6.dp))
+            Column {
+                Text(
+                    if (arrived) "Arrived" else progress?.let { formatDistance(it.distanceToNext) } ?: "",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+                Text(
+                    if (arrived) destination.name else next?.instruction ?: destination.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun etaText(context: android.content.Context, seconds: Double): String =
     DateFormat.getTimeFormat(context).format(Date(System.currentTimeMillis() + (seconds * 1000).toLong()))
 

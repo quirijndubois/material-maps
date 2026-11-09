@@ -1,9 +1,13 @@
 package app.materialmaps
 
-import android.graphics.Color
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -19,6 +23,34 @@ import app.materialmaps.ui.theme.MaterialMapsTheme
 class MainActivity : ComponentActivity() {
     /** A location link another app opened us with, until the map has shown it. */
     private val incoming = mutableStateOf<Uri?>(null)
+
+    /** Whether the app is shrunk to a picture-in-picture window. */
+    private val inPip = mutableStateOf(false)
+
+    /** Going to another app while navigating keeps the map going in a small window. */
+    private var pipWanted = false
+
+    private fun pipParams() = PictureInPictureParams.Builder()
+        .setAspectRatio(Rational(3, 4))
+        .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAutoEnterEnabled(pipWanted) }
+        .build()
+
+    private fun setPipWanted(wanted: Boolean) {
+        if (wanted == pipWanted) return
+        pipWanted = wanted
+        setPictureInPictureParams(pipParams())
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // From Android 12 the system does this itself, more smoothly.
+        if (pipWanted && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) enterPictureInPictureMode(pipParams())
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip.value = isInPictureInPictureMode
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -57,6 +89,8 @@ class MainActivity : ComponentActivity() {
                     },
                     incoming = incoming.value,
                     onIncomingHandled = { incoming.value = null },
+                    pip = inPip.value,
+                    onNavigatingChange = ::setPipWanted,
                 )
             }
         }
