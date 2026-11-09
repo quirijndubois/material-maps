@@ -33,12 +33,18 @@ data class Settings(
     val mapStyle: MapStyle = MapStyle.Standard,
     val mapColors: MapColors = MapColors.MatchApp,
     val buildings3d: Boolean = true,
+    /** Satellite photos under the map's roads and labels. */
+    val satellite: Boolean = false,
+    /** The map's own names of places, streets and the like. */
+    val labels: Boolean = true,
+    val overlays: Set<Overlay> = emptySet(),
     val showSaved: Boolean = true,
     val units: Units = Units.Metric,
     val avoidHighways: Boolean = false,
     val avoidTolls: Boolean = false,
     val avoidFerries: Boolean = false,
     val voiceGuidance: Boolean = true,
+    val vehicle: Vehicle = Vehicle.Arrow,
     /** Ids of the [QuickButton]s to show, in order. */
     val quickButtons: List<String> = QuickButton.defaults,
 ) {
@@ -53,12 +59,18 @@ data class Settings(
                 mapStyle = enumOr(p.getString("mapStyle", null), d.mapStyle),
                 mapColors = enumOr(p.getString("mapColors", null), d.mapColors),
                 buildings3d = p.getBoolean("buildings3d", d.buildings3d),
+                satellite = p.getBoolean("satellite", d.satellite),
+                labels = p.getBoolean("labels", d.labels),
+                overlays = p.getString("overlays", null)
+                    ?.split(',')?.mapNotNull { name -> Overlay.entries.firstOrNull { it.name == name } }?.toSet()
+                    ?: d.overlays,
                 showSaved = p.getBoolean("showSaved", d.showSaved),
                 units = enumOr(p.getString("units", null), d.units),
                 avoidHighways = p.getBoolean("avoidHighways", d.avoidHighways),
                 avoidTolls = p.getBoolean("avoidTolls", d.avoidTolls),
                 avoidFerries = p.getBoolean("avoidFerries", d.avoidFerries),
                 voiceGuidance = p.getBoolean("voiceGuidance", d.voiceGuidance),
+                vehicle = enumOr(p.getString("vehicle", null), d.vehicle),
                 quickButtons = p.getString("quickButtons", null)
                     ?.split(',')?.filter { QuickButton.byId(it) != null } ?: d.quickButtons,
             )
@@ -74,12 +86,16 @@ data class Settings(
             .putString("mapStyle", mapStyle.name)
             .putString("mapColors", mapColors.name)
             .putBoolean("buildings3d", buildings3d)
+            .putBoolean("satellite", satellite)
+            .putBoolean("labels", labels)
+            .putString("overlays", overlays.joinToString(",") { it.name })
             .putBoolean("showSaved", showSaved)
             .putString("units", units.name)
             .putBoolean("avoidHighways", avoidHighways)
             .putBoolean("avoidTolls", avoidTolls)
             .putBoolean("avoidFerries", avoidFerries)
             .putBoolean("voiceGuidance", voiceGuidance)
+            .putString("vehicle", vehicle.name)
             .putString("quickButtons", quickButtons.joinToString(","))
             .apply()
     }

@@ -31,6 +31,12 @@ import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.DownhillSkiing
+import androidx.compose.material.icons.outlined.Hiking
+import androidx.compose.material.icons.outlined.Sailing
+import androidx.compose.material.icons.outlined.SatelliteAlt
+import androidx.compose.material.icons.outlined.Subway
+import androidx.compose.material.icons.outlined.Terrain
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -100,6 +106,36 @@ private val credits = listOf(
         Icons.Outlined.Layers, "OpenFreeMap · © OpenMapTiles",
         "Map tiles and the map style.",
         "https://openfreemap.org",
+    ),
+    Credit(
+        Icons.Outlined.SatelliteAlt, "Esri World Imagery",
+        "Satellite photos. Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community.",
+        "https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9",
+    ),
+    Credit(
+        Icons.Outlined.Terrain, "Terrain Tiles · Mapzen",
+        "Elevation for terrain shading, from the Terrain Tiles open dataset on AWS.",
+        "https://registry.opendata.aws/terrain-tiles/",
+    ),
+    Credit(
+        Icons.Outlined.Hiking, "Waymarked Trails",
+        "Hiking and cycling routes, © Sarah Hoffmann, CC BY-SA 3.0.",
+        "https://waymarkedtrails.org",
+    ),
+    Credit(
+        Icons.Outlined.Subway, "VersaTiles",
+        "Metro and tram lines in the city-wide view.",
+        "https://versatiles.org",
+    ),
+    Credit(
+        Icons.Outlined.DownhillSkiing, "OpenSnowMap",
+        "Ski slopes, CC BY-SA 2.0.",
+        "https://www.opensnowmap.org",
+    ),
+    Credit(
+        Icons.Outlined.Sailing, "OpenSeaMap",
+        "Sea marks, CC BY-SA 2.0.",
+        "https://www.openseamap.org",
     ),
     Credit(
         Icons.AutoMirrored.Outlined.DirectionsWalk, "Valhalla · FOSSGIS",

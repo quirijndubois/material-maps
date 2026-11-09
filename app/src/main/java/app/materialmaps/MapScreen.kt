@@ -157,7 +157,6 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
-import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
@@ -179,8 +178,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.CircularProgressIndicator
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToLong
+import android.animation.ValueAnimator
+import android.view.animation.PathInterpolator
+import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.core.animation.doOnEnd
+import java.util.concurrent.atomic.AtomicReference
 
 // Free OpenStreetMap vector tiles, no API key needed (https://openfreemap.org). Dark mode
 // recolors the detailed light style (see DarkStyle); their own dark style is only a fallback.
@@ -281,6 +287,7 @@ fun MapScreen(
     // Counts camera flights to the user, so one that's been overtaken by another action
     // (a second tap, picking a place) can't change the follow mode when it ends.
     val flights = remember { AtomicInteger() }
+    val turnAnimator = remember { AtomicReference<ValueAnimator?>(null) }
     var wantsTracking by remember { mutableStateOf(false) }
     var hasLocationPermission by remember { mutableStateOf(context.hasLocationPermission()) }
     var askedForPermission by rememberSaveable { mutableStateOf(false) }
@@ -297,6 +304,8 @@ fun MapScreen(
     var lastListId by remember { mutableStateOf<String?>(null) }
     var savingPlace by remember { mutableStateOf<Place?>(null) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showLayers by rememberSaveable { mutableStateOf(false) }
+    var showVehicles by rememberSaveable { mutableStateOf(false) }
     var shortcuts by remember { mutableStateOf(Shortcuts.load(context)) }
     var picking by remember { mutableStateOf<PickFor?>(null) }
     var categoryLoading by remember { mutableStateOf<Category?>(null) }
@@ -443,6 +452,59 @@ fun MapScreen(
         })
     }
 
+    /** Stops a [turnThenTrack] under way; when the user did that, they're no longer followed. */
+    fun stopTurning(byUser: Boolean) {
+        val animator = turnAnimator.getAndSet(null) ?: return
+        animator.cancel()
+        if (byUser) follow = Follow.Off
+    }
+
+    /**
+     * Turns the camera to [bearing] (and [tilt]) over the user, then follows them in [mode].
+     * MapLibre only animates into a tracking mode when it wasn't tracking yet, and its north-up
+     * mode only turns on the next GPS fix, so switching between follow modes would otherwise
+     * snap, or do nothing at all while standing still. [bearing] is asked again every frame,
+     * so turning towards the phone's heading ends where the phone points by then, and following
+     * takes over without a jump.
+     */
+    fun turnThenTrack(mode: Int, followAs: Follow, bearing: () -> Double, tilt: Double? = null) {
+        val component = locationComponent() ?: return
+        val m = map ?: return
+        val flight = flights.incrementAndGet()
+        stopTurning(byUser = false)
+        // Hold the camera still for the animation; this also reports following as off for now.
+        component.cameraMode = CameraMode.NONE
+        follow = followAs
+        val start = m.cameraPosition
+        val from = start.target
+        val animator = ValueAnimator.ofFloat(0f, 1f).setDuration(500)
+        animator.interpolator = PathInterpolator(0.4f, 0f, 0.2f, 1f)
+        animator.addUpdateListener {
+            if (flight != flights.get()) {
+                animator.cancel()
+                return@addUpdateListener
+            }
+            val t = (it.animatedValue as Float).toDouble()
+            val camera = CameraPosition.Builder(start)
+            val turn = ((bearing() - start.bearing) % 360 + 540) % 360 - 180
+            camera.bearing(start.bearing + turn * t)
+            val here = component.lastKnownLocation
+            if (here != null && from != null) {
+                camera.target(LatLng(
+                    from.latitude + (here.latitude - from.latitude) * t,
+                    from.longitude + (here.longitude - from.longitude) * t,
+                ))
+            }
+            if (tilt != null) camera.tilt(start.tilt + (tilt - start.tilt) * t)
+            m.moveCamera(CameraUpdateFactory.newCameraPosition(camera.build()))
+        }
+        animator.doOnEnd {
+            if (turnAnimator.compareAndSet(animator, null) && flight == flights.get()) component.cameraMode = mode
+        }
+        turnAnimator.set(animator)
+        animator.start()
+    }
+
     /** Centers on the user and follows them: at street zoom, or turning with the route while navigating. */
     fun followMe() {
         val component = locationComponent()
@@ -475,13 +537,11 @@ fun MapScreen(
             followMe()
             return
         }
-        flights.incrementAndGet()
         if (follow == Follow.Following) {
-            component.cameraMode = CameraMode.TRACKING_COMPASS
-            follow = Follow.Compass
+            val fallback = map?.cameraPosition?.bearing ?: 0.0
+            turnThenTrack(CameraMode.TRACKING_COMPASS, Follow.Compass, { component.compassEngine?.lastHeading?.toDouble() ?: fallback })
         } else {
-            component.cameraMode = CameraMode.TRACKING_GPS_NORTH
-            follow = Follow.Following
+            turnThenTrack(CameraMode.TRACKING_GPS_NORTH, Follow.Following, { 0.0 })
         }
     }
 
@@ -688,7 +748,7 @@ fun MapScreen(
         voice.stop()
         locationComponent()?.apply {
             cameraMode = CameraMode.NONE
-            setNavigationPuck(context, accent, navigating = false)
+            setNavigationPuck(context, style, accent, navigating = false, settings.vehicle)
         }
         map?.let { m ->
             m.animateCamera(
@@ -777,18 +837,17 @@ fun MapScreen(
         directionsFrom = null
         navigating = true
         progress = null
-        locationComponent()?.setNavigationPuck(context, accent, navigating = true)
+        locationComponent()?.setNavigationPuck(context, style, accent, navigating = true, settings.vehicle)
         followMe()
     }
 
     fun pointNorth() {
         val m = map ?: return
         val component = locationComponent()
-        // While following, an animation of our own would fight the tracking; let it turn north instead.
         if (component != null && component.cameraMode != CameraMode.NONE) {
-            flights.incrementAndGet()
-            component.cameraMode = CameraMode.TRACKING_GPS_NORTH
-            if (follow == Follow.Compass) follow = Follow.Following
+            // Keep following, but north up from here; flat too, except in the driving view.
+            val mode = if (component.cameraMode == CameraMode.TRACKING) CameraMode.TRACKING else CameraMode.TRACKING_GPS_NORTH
+            turnThenTrack(mode, Follow.Following, { 0.0 }, tilt = if (navigating) null else 0.0)
             return
         }
         m.animateCamera(
@@ -955,9 +1014,25 @@ fun MapScreen(
                 // Credits (including the map's attribution) live behind our own button.
                 isAttributionEnabled = false
             }
+            mapView.setOnTouchListener(MapGestures(
+                mapView, m,
+                onStart = {
+                    overview = false
+                    stopTurning(byUser = true)
+                },
+                onStopTracking = { stopTracking() },
+                onFreeBearing = {
+                    flights.incrementAndGet()
+                    locationComponent()?.cameraMode = CameraMode.TRACKING
+                    if (follow == Follow.Compass) follow = Follow.Following
+                },
+            ))
             // Moving the map by hand leaves the route overview; its button then shows it again.
             m.addOnCameraMoveStartedListener { reason ->
-                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) overview = false
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    overview = false
+                    stopTurning(byUser = true)
+                }
             }
             m.addOnCameraMoveListener {
                 // Following, the camera sits on the arrow as it glides, so the route can be cut
@@ -973,6 +1048,16 @@ fun MapScreen(
                 if (measure != null) aim = m.projection.fromScreenLocation(crosshair())
             }
             m.addOnMapClickListener { point ->
+                // Tapping yourself while navigating picks what you drive.
+                val here = locationComponent()?.lastKnownLocation
+                if (navigating && here != null) {
+                    val at = m.projection.toScreenLocation(LatLng(here.latitude, here.longitude))
+                    val tap = m.projection.toScreenLocation(point)
+                    if (hypot(at.x - tap.x, at.y - tap.y) < dp(40)) {
+                        showVehicles = true
+                        return@addOnMapClickListener true
+                    }
+                }
                 // While measuring, a tap adds a point there.
                 measure?.let {
                     measure = it + point
@@ -1059,12 +1144,17 @@ fun MapScreen(
         }
     }
 
-    // 3D buildings, where the style has them.
-    LaunchedEffect(style, settings.buildings3d) {
-        val s = style ?: return@LaunchedEffect
-        val visibility = if (settings.buildings3d) Property.VISIBLE else Property.NONE
-        s.layers.filterIsInstance<FillExtrusionLayer>().forEach { it.setProperties(PropertyFactory.visibility(visibility)) }
+    // A newly picked vehicle shows right away.
+    LaunchedEffect(settings.vehicle) {
+        if (navigating) locationComponent()?.setNavigationPuck(context, style, accent, navigating = true, settings.vehicle)
     }
+
+    // Satellite, labels, 3D buildings and overlays, as picked from the layers button.
+    LaunchedEffect(style, settings.satellite, settings.labels, settings.buildings3d, settings.overlays) {
+        val s = style ?: return@LaunchedEffect
+        s.applyLayers(settings, dark = darkMap, below = ALT_ROUTE_LAYER)
+    }
+
 
     // The measured path: placed points, plus a last stretch to the crosshair.
     LaunchedEffect(measure, aim, style) {
@@ -1096,7 +1186,7 @@ fun MapScreen(
         val m = map ?: return@LaunchedEffect
         val s = style ?: return@LaunchedEffect
         if (!hasLocationPermission) return@LaunchedEffect
-        m.enableLocation(context, s, headingEngine, accent, gps = navigating) { following -> if (!following) follow = Follow.Off }
+        m.enableLocation(context, s, headingEngine, accent, gps = navigating, vehicle = settings.vehicle) { following -> if (!following) follow = Follow.Off }
         if (wantsTracking) {
             wantsTracking = false
             // Tracking only zooms once there is a fix, so wait for the first one (usually the
@@ -1641,6 +1731,18 @@ fun MapScreen(
     CompositionLocalProvider(LocalListMaxHeight provides listMax) {
         Box(Modifier.fillMaxSize()) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+            val vehicleModel = settings.vehicle.model
+            if (navigating && vehicleModel != null) {
+                // Placed over the user every frame by the view itself.
+                AndroidView(
+                    factory = { VehicleOverlay(it) },
+                    update = {
+                        it.map = map
+                        it.model = vehicleModel
+                    },
+                    modifier = Modifier.size(VehicleOverlay.SIZE_DP.dp),
+                )
+            }
 
             if (measure != null) {
                 // Aim with the map; the crosshair stays put. Same spot as crosshair() works out.
@@ -1733,15 +1835,39 @@ fun MapScreen(
                 )
             }
 
-            AnimatedVisibility(
-                visible = compassVisible,
-                enter = fadeIn() + scaleIn(),
-                exit = fadeOut() + scaleOut(),
-                modifier = Modifier
+            // The layers button, with the compass under it when the map is turned or tilted.
+            Column(
+                Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = with(density) { topChromePx.toDp() } + 12.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Compass(bearing = { bearing }, onClick = ::pointNorth)
+                if (!navigating) {
+                    SmallFloatingActionButton(
+                        onClick = { showLayers = true },
+                        containerColor = colors.surfaceContainerHigh,
+                        contentColor = colors.primary,
+                    ) {
+                        Icon(Icons.Outlined.Layers, contentDescription = "Layers")
+                    }
+                }
+                AnimatedVisibility(
+                    visible = compassVisible,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut(),
+                ) {
+                    Compass(bearing = { bearing }, onClick = ::pointNorth)
+                }
+            }
+            if (showVehicles) {
+                VehicleSheet(
+                    selected = settings.vehicle,
+                    onSelect = { onSettingsChange(settings.copy(vehicle = it)) },
+                    onDismiss = { showVehicles = false },
+                )
+            }
+            if (showLayers) {
+                LayersSheet(settings = settings, onChange = onSettingsChange, onDismiss = { showLayers = false })
             }
 
             val following = follow != Follow.Off
@@ -2473,6 +2599,7 @@ private fun MapLibreMap.enableLocation(
     engine: LocationEngine,
     color: Int,
     gps: Boolean,
+    vehicle: Vehicle,
     onTrackingChanged: (Boolean) -> Unit,
 ) {
     val component = locationComponent
@@ -2504,13 +2631,20 @@ private fun MapLibreMap.enableLocation(
         })
     }
     component.isLocationComponentEnabled = true
-    component.setNavigationPuck(context, color, gps)
+    component.setNavigationPuck(context, style, color, gps, vehicle)
 }
 
-/** The blue dot with a heading cone normally; a direction arrow while navigating. */
-private fun LocationComponent.setNavigationPuck(context: Context, color: Int, navigating: Boolean) {
+/** The blue dot with a heading cone normally; a direction arrow, or the chosen [vehicle], while navigating. */
+private fun LocationComponent.setNavigationPuck(
+    context: Context,
+    style: Style?,
+    color: Int,
+    navigating: Boolean,
+    vehicle: Vehicle,
+) {
     applyStyle(locationOptions(context, color, navigating))
     renderMode = if (navigating) RenderMode.GPS else RenderMode.COMPASS
+    if (navigating) style?.useVehicle(vehicle)
 }
 
 private fun locationOptions(context: Context, color: Int, navigating: Boolean): LocationComponentOptions {

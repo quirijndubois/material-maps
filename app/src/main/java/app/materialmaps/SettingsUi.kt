@@ -63,7 +63,32 @@ fun SettingsSheet(
     onDismiss: () -> Unit,
 ) {
     var editingQuickButtons by rememberSaveable { mutableStateOf(false) }
+    var pickingVehicle by rememberSaveable { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        if (pickingVehicle) {
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp)
+            ) {
+                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { pickingVehicle = false }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text("Your vehicle", style = MaterialTheme.typography.titleLarge)
+                }
+                Text(
+                    "What you drive around in while navigating. You can also tap it on the map.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                )
+                VehicleGrid(settings.vehicle) { onChange(settings.copy(vehicle = it)) }
+            }
+            BackHandler { pickingVehicle = false }
+            return@ModalBottomSheet
+        }
         if (editingQuickButtons) {
             Column(
                 Modifier
@@ -103,14 +128,20 @@ fun SettingsSheet(
             Heading("Map")
             Choice("Appearance", Appearance.entries, settings.appearance, { it.label }) { onChange(settings.copy(appearance = it)) }
             Choice("Map colors", MapColors.entries, settings.mapColors, { it.label }) { onChange(settings.copy(mapColors = it)) }
-            Choice("Style", MapStyle.entries, settings.mapStyle, { it.label }) { onChange(settings.copy(mapStyle = it)) }
-            Toggle("3D buildings", "When the map is tilted", settings.buildings3d) { onChange(settings.copy(buildings3d = it)) }
-            Toggle("Show saved places", "Your lists as dots on the map", settings.showSaved) { onChange(settings.copy(showSaved = it)) }
             Choice("Distances", Units.entries, settings.units, { it.label }) { onChange(settings.copy(units = it)) }
 
             HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
             Heading("Directions")
             Toggle("Voice guidance", "Speak turns while navigating", settings.voiceGuidance) { onChange(settings.copy(voiceGuidance = it)) }
+            ListItem(
+                headlineContent = { Text("Vehicle") },
+                supportingContent = { Text(settings.vehicle.label) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier
+                    .padding(horizontal = 8.dp)
+                    .clickable { pickingVehicle = true },
+            )
             Toggle("Avoid highways", "Driving", settings.avoidHighways) { onChange(settings.copy(avoidHighways = it)) }
             Toggle("Avoid tolls", "Driving", settings.avoidTolls) { onChange(settings.copy(avoidTolls = it)) }
             Toggle("Avoid ferries", null, settings.avoidFerries) { onChange(settings.copy(avoidFerries = it)) }
