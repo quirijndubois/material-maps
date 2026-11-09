@@ -60,7 +60,7 @@ import androidx.compose.ui.unit.dp
 
 val PlaceList.icon: ImageVector get() = if (isFavourites) Icons.Filled.Star else Icons.AutoMirrored.Outlined.List
 
-private fun placeCount(n: Int) = if (n == 1) "1 place" else "$n places"
+internal fun placeCount(n: Int) = if (n == 1) "1 place" else "$n places"
 
 /** Pick the lists a place is on, or start a new one with it. */
 @Composable

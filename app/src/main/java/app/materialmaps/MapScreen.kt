@@ -1,6 +1,7 @@
 package app.materialmaps
 
 import android.Manifest
+import androidx.compose.foundation.layout.asPaddingValues
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
@@ -215,6 +216,7 @@ private const val SAVED_SOURCE = "saved-places"
 private const val SAVED_LAYER = "saved-places-dot"
 private const val RESULTS_SOURCE = "search-results"
 private const val RESULTS_LAYER = "search-results-dot"
+private const val RESULTS_LABEL_LAYER = "search-results-label"
 private const val TRANSIT_WALK_SOURCE = "transit-walks"
 private const val TRANSIT_WALK_LAYER = "transit-walks-line"
 private const val TRANSIT_RIDE_SOURCE = "transit-rides"
@@ -238,7 +240,7 @@ private val SIDE_PANEL_WIDTH = 400.dp
 /** How close the location button zooms in, unless already closer. */
 private const val FOLLOW_ZOOM = 16.0
 
-private enum class Panel { None, Place, List, Route, Navigation, Trip, Measure }
+private enum class Panel { None, Place, List, Results, Route, Navigation, Trip, Measure }
 
 /** What the place picker is choosing a place for. */
 private enum class PickFor { Stop, Home, Work, Origin, Destination }
@@ -618,7 +620,7 @@ fun MapScreen(
             return
         }
         if (results.isEmpty()) return
-        showOnMap(results)
+        showOnMap(results, bottomSpace = 380)
     }
 
     fun openList(list: PlaceList) {
@@ -1007,6 +1009,25 @@ fun MapScreen(
                         PropertyFactory.circleColor(colors.secondary.toArgb()),
                         PropertyFactory.circleStrokeWidth(2f),
                         PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    )
+                )
+                // Names next to the pins, where there's room: the map leaves out those that would
+                // overlap, so more show as one zooms in. The best results get theirs first.
+                val font = loaded.layers.filterIsInstance<SymbolLayer>()
+                    .firstNotNullOfOrNull { (it.textFont.value as? Array<*>)?.filterIsInstance<String>()?.takeIf { f -> f.isNotEmpty() } }
+                    ?.toTypedArray() ?: arrayOf("Noto Sans Regular")
+                loaded.addLayer(
+                    SymbolLayer(RESULTS_LABEL_LAYER, RESULTS_SOURCE).withProperties(
+                        PropertyFactory.textField(Expression.get("name")),
+                        PropertyFactory.textFont(font),
+                        PropertyFactory.textSize(12.5f),
+                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                        PropertyFactory.textOffset(arrayOf(0f, 0.8f)),
+                        PropertyFactory.textMaxWidth(9f),
+                        PropertyFactory.textColor(colors.onSurface.toArgb()),
+                        PropertyFactory.textHaloColor(colors.surface.toArgb()),
+                        PropertyFactory.textHaloWidth(1.6f),
+                        PropertyFactory.symbolSortKey(Expression.get("order")),
                     )
                 )
                 loaded.addLayer(
@@ -1438,8 +1459,17 @@ fun MapScreen(
         source.setGeoJson(
             FeatureCollection.fromFeatures(
                 if (!resultsOnMap) emptyList()
-                else mapResults.mapIndexed { i, place ->
-                    Feature.fromGeometry(Point.fromLngLat(place.lon, place.lat)).apply { addNumberProperty("index", i) }
+                else {
+                    // Labels go to the best results first when they'd overlap.
+                    val from = myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: map?.cameraPosition?.target
+                    val order = ResultRanking.recommended(mapResults, from).withIndex().associate { it.value to it.index }
+                    mapResults.mapIndexed { i, place ->
+                        Feature.fromGeometry(Point.fromLngLat(place.lon, place.lat)).apply {
+                            addNumberProperty("index", i)
+                            addNumberProperty("order", order[place] ?: i)
+                            addStringProperty("name", place.name)
+                        }
+                    }
                 }
             )
         )
@@ -1985,6 +2015,7 @@ fun MapScreen(
                     directionsTo != null -> Panel.Route
                     selected != null -> Panel.Place
                     openListId != null -> Panel.List
+                    resultsOnMap && mapResults.size > 1 -> Panel.Results
                     else -> Panel.None
                 }
                 // Animating the panel's size makes the location button glide up and down with it.
@@ -2000,6 +2031,7 @@ fun MapScreen(
                     // Fall back to the last values so panels keep their content while animating out.
                     val destination = directionsTo ?: lastDestination
                     val place = selected ?: lastShownPlace
+                    val shownResults = mapResults
                     val panelModifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 16.dp)
@@ -2082,6 +2114,23 @@ fun MapScreen(
                                 modifier = panelModifier,
                             )
                         }
+                        target == Panel.Results && shownResults.isNotEmpty() -> ResultsPanel(
+                            title = resultsFor.ifBlank { "Results" },
+                            places = shownResults,
+                            here = myLocation(),
+                            from = myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: map?.cameraPosition?.target,
+                            onSelect = { select(it, zoom = null) },
+                            onClose = { resultsOnMap = false },
+                            // Up to just under the search bar.
+                            maxHeight = configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - 8.dp +
+                                WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+                            // A sheet from the bottom edge on phones; in the side column, a card like the others.
+                            modifier = if (wide) Modifier.fillMaxWidth().padding(top = 16.dp)
+                            else Modifier
+                                .fillMaxWidth()
+                                .padding(top = 16.dp)
+                                .bleed(horizontal = 16.dp, bottom = 16.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
+                        )
                         target == Panel.Place && place != null -> PlaceCard(
                             place,
                             saved = lists.containing(place).isNotEmpty(),
