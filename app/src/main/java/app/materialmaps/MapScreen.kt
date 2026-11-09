@@ -107,6 +107,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -167,6 +168,11 @@ import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import app.materialmaps.AreaOverlays.hideBuses
+import app.materialmaps.AreaOverlays.hidePins
+import app.materialmaps.AreaOverlays.showBuses
+import app.materialmaps.AreaOverlays.showPins
+import app.materialmaps.AreaOverlays.showTilePins
 import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -174,6 +180,7 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
 import java.util.Locale
+import java.io.IOException
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -430,6 +437,20 @@ fun MapScreen(
     var tripTime by remember { mutableStateOf(TripTime()) }
 
     var poiLayers by remember { mutableStateOf(emptyArray<String>()) }
+    // What the map shows once it has settled, for the overlays looked up for the view.
+    var viewArea by remember { mutableStateOf<Pair<LatLngBounds, Double>?>(null) }
+    var areaPins by remember { mutableStateOf(emptyList<AreaPin>()) }
+    // Radar and satellite pictures of the last hours, and the time picked from them (null
+    // for the latest).
+    var recentTimes by remember { mutableStateOf(emptyList<Long>()) }
+    var recentPicked by remember { mutableStateOf<Long?>(null) }
+    var rainFrames by remember { mutableStateOf(emptyList<RainRadar.Frame>()) }
+    // Forecasts, and the hour picked from them (null for now).
+    var forecast by remember { mutableStateOf<Forecast?>(null) }
+    var forecastPicked by remember { mutableStateOf<Long?>(null) }
+    var airStations by remember { mutableStateOf(emptyList<Reading>()) }
+    var airSensors by remember { mutableStateOf<SensorCommunity.Sensors?>(null) }
+    val pinIcons = rememberPinIcons()
     var resultsOnMap by remember { mutableStateOf(false) }
     var mapResults by remember { mutableStateOf(emptyList<Place>()) }
 
@@ -1274,7 +1295,10 @@ fun MapScreen(
             map = m
             // Open where the map was last left, so there's no world view while waiting for a fix.
             context.lastCamera()?.let { m.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
-            m.addOnCameraIdleListener { context.saveCamera(m.cameraPosition) }
+            m.addOnCameraIdleListener {
+                context.saveCamera(m.cameraPosition)
+                viewArea = m.projection.visibleRegion.latLngBounds to m.cameraPosition.zoom
+            }
             m.uiSettings.apply {
                 isLogoEnabled = false
                 // We draw our own compass so it can sit below the search bar.
@@ -1367,6 +1391,30 @@ fun MapScreen(
                         select(it, zoom = null)
                         return@addOnMapClickListener true
                     }
+                    hit(AreaOverlays.PINS_LAYER)?.getNumberProperty("index")?.toInt()?.let { areaPins.getOrNull(it) }?.let { pin ->
+                        val place = pin.place
+                        select(place, zoom = null)
+                        if (pin.overlay != Overlay.WikiArticles) scope.launch {
+                            val address = runCatching { Geocoder.reverse(place.lat, place.lon) }.getOrNull()
+                            if (address != null && selected === place) {
+                                selected = place.copy(subtitle = listOf(address.name, address.subtitle).filter { it.isNotBlank() }.joinToString(", "))
+                            }
+                        }
+                        return@addOnMapClickListener true
+                    }
+                    hit(AreaOverlays.TILE_PINS_LAYER)?.let { feature ->
+                        val at = (feature.geometry() as? Point)?.let { LatLng(it.latitude(), it.longitude()) } ?: point
+                        val kind = Overlay.entries.firstOrNull { it.inMapTiles && it.pins?.value == feature.getStringProperty("subclass") }?.pins
+                        val place = poiPlace(feature, point) ?: Place(kind?.label ?: "Place", "", at.latitude, at.longitude, type = kind?.value, key = kind?.key)
+                        select(place, zoom = null)
+                        scope.launch {
+                            val address = runCatching { Geocoder.reverse(place.lat, place.lon) }.getOrNull()
+                            if (address != null && selected === place) {
+                                selected = place.copy(subtitle = listOf(address.name, address.subtitle).filter { it.isNotBlank() }.joinToString(", "))
+                            }
+                        }
+                        return@addOnMapClickListener true
+                    }
                     hit(*poiLayers)?.let { feature ->
                         val poi = poiPlace(feature, point) ?: return@let null
                         select(poi, zoom = null)
@@ -1447,11 +1495,167 @@ fun MapScreen(
     }
 
     // Satellite, labels, 3D buildings and overlays, as picked from the layers button.
-    LaunchedEffect(style, settings.satellite, settings.labels, settings.buildings3d, settings.overlays) {
+    LaunchedEffect(style, settings.satellite, settings.aerialYear, settings.labels, settings.buildings3d, settings.overlays) {
         val s = style ?: return@LaunchedEffect
         s.applyLayers(settings, dark = darkMap, below = ALT_ROUTE_LAYER)
     }
 
+    // What's loading for an overlay that's been turned off no longer counts.
+    val shownLabels = settings.overlays.map { it.label } +
+        (if (settings.satellite) listOf("Satellite", "Aerial photos") else emptyList()) +
+        (if (Overlay.Metro in settings.overlays || Overlay.Trams in settings.overlays) listOf("Metro and trams") else emptyList())
+    LaunchedEffect(shownLabels) {
+        Loading.keepOnly { label -> shownLabels.any { it in label } }
+    }
+
+    // Rain radar and satellite pictures of the last hours, on one slider, kept up to date
+    // while any is on. The pictures load for what's in view, each time only once shown.
+    val recentOverlays = settings.overlays.filter { it == Overlay.Rain || Satellite.layer(it) != null }.toSet()
+    val showRain = Overlay.Rain in recentOverlays
+    LaunchedEffect(recentOverlays.isNotEmpty(), showRain) {
+        if (recentOverlays.isEmpty()) recentTimes = emptyList()
+        if (!showRain) rainFrames = emptyList()
+        while (recentOverlays.isNotEmpty()) {
+            if (showRain) {
+                runCatching { Loading.track(Overlay.Rain.label) { RainRadar.frames() } }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { rainFrames = it }
+            }
+            recentTimes = RecentTimes.now()
+            delay(RainRadar.REFRESH_MS)
+        }
+    }
+    val recentTime = recentPicked?.takeIf { it in recentTimes } ?: recentTimes.lastOrNull()
+    LaunchedEffect(style, recentTimes, recentTime, rainFrames, recentOverlays) {
+        val s = style ?: return@LaunchedEffect
+        if (showRain) {
+            s.showFrames(RAIN_FRAMES, rainFrames.associate { it.time to it.tiles }, recentTime, 7f, 0.65f, preload = true, below = ALT_ROUTE_LAYER)
+        }
+        for (overlay in recentOverlays) {
+            val layer = Satellite.layer(overlay) ?: continue
+            val opacity = when (overlay) {
+                Overlay.Clouds -> 0.9f
+                Overlay.LiveSatellite -> 0.75f
+                else -> 1f
+            }
+            s.showFrames(satelliteFrames(overlay), recentTimes.associateWith { Satellite.tiles(layer, it) }, recentTime, 7f, opacity, preload = false, below = ALT_ROUTE_LAYER)
+        }
+    }
+
+    // Forecasts, on one hourly slider: weather worked out here from a grid of points over the
+    // view (fetched again for a new area, a new zoom level, or once the hour is up), and air
+    // quality pictures drawn by the CAMS chart server.
+    val weatherOverlays = settings.overlays.filter { it.field != null }.toSet()
+    val camsOverlays = settings.overlays.filter { Cams.layer(it) != null }.toSet()
+    val forecastTimes = remember(weatherOverlays.isNotEmpty() || camsOverlays.isNotEmpty(), System.currentTimeMillis() / 3_600_000) {
+        if (weatherOverlays.isNotEmpty() || camsOverlays.isNotEmpty()) ForecastTimes.now() else emptyList()
+    }
+    val forecastTime = forecastPicked?.takeIf { it in forecastTimes } ?: forecastTimes.lastOrNull { it <= System.currentTimeMillis() / 1000 }
+    val forecastCache = remember { AreaOverlays.AreaCache<Forecast>(margin = 0.15) }
+    LaunchedEffect(weatherOverlays, viewArea) {
+        if (weatherOverlays.isEmpty()) {
+            forecast = null
+            return@LaunchedEffect
+        }
+        val (view, zoom) = viewArea ?: return@LaunchedEffect
+        delay(400)
+        val key = weatherOverlays to System.currentTimeMillis() / 3_600_000
+        runCatching {
+            forecastCache.get(view, key, zoom) {
+                Loading.track(weatherOverlays.joinToString(", ") { o -> o.label }) { OpenMeteo.forecast(weatherOverlays, it) } ?: throw IOException("No forecast")
+            }
+        }.getOrNull()?.let { forecast = it }
+    }
+    LaunchedEffect(style, forecast, forecastTime, weatherOverlays) {
+        val s = style ?: return@LaunchedEffect
+        val f = forecast ?: return@LaunchedEffect
+        val hour = forecastTime?.let { f.times.indexOf(it) }?.takeIf { it >= 0 } ?: return@LaunchedEffect
+        for (overlay in weatherOverlays) {
+            if (overlay == Overlay.Wind) s.showWind(f, hour, below = ALT_ROUTE_LAYER) else s.showField(overlay, f, hour, below = ALT_ROUTE_LAYER)
+        }
+    }
+    LaunchedEffect(style, forecastTimes, forecastTime, camsOverlays) {
+        val s = style ?: return@LaunchedEffect
+        for (overlay in camsOverlays) {
+            val layer = Cams.layer(overlay) ?: continue
+            val frames = forecastTimes.map { Cams.frameTime(layer, it) }.distinct().associateWith { Cams.tiles(layer, it) }
+            val time = forecastTime?.let { Cams.frameTime(layer, it) }
+            s.showFrames(satelliteFrames(overlay), frames, time, 7f, 0.6f, preload = false, below = ALT_ROUTE_LAYER)
+        }
+    }
+
+    // Air quality measured now, at Dutch stations and by people's own sensors.
+    val showStations = Overlay.AirStations in settings.overlays
+    LaunchedEffect(showStations) {
+        if (!showStations) airStations = emptyList()
+        while (showStations) {
+            runCatching { Loading.track(Overlay.AirStations.label) { Luchtmeetnet.latest(context) } }.getOrNull()?.let { airStations = it }
+            delay(15 * 60_000L)
+        }
+    }
+    LaunchedEffect(style, airStations, darkMap) {
+        if (showStations && airStations.isNotEmpty()) style?.showReadings(sensors = false, airStations, darkMap, below = SAVED_LAYER)
+    }
+    val showSensors = Overlay.AirSensors in settings.overlays
+    LaunchedEffect(showSensors) {
+        if (!showSensors) airSensors = null
+        // The file has every sensor in the world, so not too often.
+        while (showSensors) {
+            runCatching { Loading.track(Overlay.AirSensors.label) { SensorCommunity.all() } }.getOrNull()?.let { airSensors = it }
+            delay(15 * 60_000L)
+        }
+    }
+    LaunchedEffect(style, airSensors, viewArea, darkMap) {
+        val sensors = airSensors ?: return@LaunchedEffect
+        val (view, _) = viewArea ?: return@LaunchedEffect
+        if (!showSensors) return@LaunchedEffect
+        val span = view.span
+        val around = LatLngBounds.from(
+            (view.latitudeNorth + span.latitudeSpan / 2).coerceAtMost(85.0), view.longitudeEast + span.longitudeSpan / 2,
+            (view.latitudeSouth - span.latitudeSpan / 2).coerceAtLeast(-85.0), view.longitudeWest - span.longitudeSpan / 2,
+        )
+        style?.showReadings(sensors = true, SensorCommunity.readings(sensors, around), darkMap, below = SAVED_LAYER)
+    }
+
+    // Places of the kinds picked from the layers button: from the map's own data where it has
+    // them, else looked up for what's in view.
+    val pinOverlays = settings.overlays.filter { it.isPins }.toSet()
+    val pinCache = remember { AreaOverlays.AreaCache<List<AreaPin>>() }
+    LaunchedEffect(style, pinOverlays) {
+        style?.showTilePins(pinOverlays, pinIcons, below = SAVED_LAYER)
+    }
+    LaunchedEffect(style, pinOverlays, viewArea) {
+        val s = style ?: return@LaunchedEffect
+        val (view, zoom) = viewArea ?: return@LaunchedEffect
+        val lookedUp = pinOverlays.filterNot { it.inMapTiles }.toSet()
+        val near = zoom >= minOf(AreaOverlays.PINS_ZOOM, AreaOverlays.WIKI_ZOOM)
+        if (lookedUp.isEmpty() || !near) {
+            areaPins = emptyList()
+            s.hidePins()
+            return@LaunchedEffect
+        }
+        // Wait for the map to settle, rather than look up every stop on the way.
+        delay(400)
+        // Only Wikipedia shows between their zooms, so that changes what's to fetch too.
+        val key = lookedUp to (zoom >= AreaOverlays.PINS_ZOOM)
+        val pins = runCatching { pinCache.get(view, key) { AreaOverlays.pins(lookedUp, it, zoom) } }.getOrNull() ?: return@LaunchedEffect
+        areaPins = pins
+        s.showPins(pins, pinIcons, below = SAVED_LAYER)
+    }
+
+    // Bus routes in view, as running in the next half hour.
+    val showBuses = Overlay.Buses in settings.overlays
+    val busCache = remember { AreaOverlays.AreaCache<FeatureCollection>(margin = 0.25) }
+    LaunchedEffect(style, showBuses, viewArea, darkMap) {
+        val s = style ?: return@LaunchedEffect
+        val (view, zoom) = viewArea ?: return@LaunchedEffect
+        if (!showBuses || zoom < AreaOverlays.BUS_ZOOM) {
+            s.hideBuses()
+            return@LaunchedEffect
+        }
+        delay(400)
+        val key = System.currentTimeMillis() / 900_000
+        val lines = runCatching { busCache.get(view, key) { AreaOverlays.buses(it, zoom) } }.getOrNull() ?: return@LaunchedEffect
+        s.showBuses(lines, dark = darkMap, below = ALT_ROUTE_LAYER)
+    }
 
     // The measured path: placed points, plus a last stretch to the crosshair.
     LaunchedEffect(measure, aim, style) {
@@ -2120,6 +2324,38 @@ fun MapScreen(
                     }
                 }
 
+                val loading by Loading.state.collectAsState()
+                val showForecast = forecastTimes.isNotEmpty() && forecastTime != null
+                val f = forecast
+                if ((recentTimes.isNotEmpty() || showForecast || loading.isNotEmpty()) && selected == null && directionsTo == null && !navigating && measure == null && pickingOnMap == null) {
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .navigationBarsPadding()
+                            .padding(start = (if (wide) SIDE_PANEL_WIDTH + 16.dp else 0.dp) + 52.dp, end = 96.dp, bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (loading.isNotEmpty()) LoadingPill(loading)
+                        if (showForecast && forecastTime != null) {
+                            TimeSlider(
+                                times = forecastTimes,
+                                index = forecastTimes.indexOf(forecastTime),
+                                onIndex = { forecastPicked = forecastTimes[it] },
+                                pattern = "EEE HH:mm",
+                                legends = if (f == null) emptyList() else weatherOverlays.mapNotNull { o -> o.field?.let { spec -> f.scale(spec)?.let { spec.label to it } } },
+                            )
+                        }
+                        if (recentTimes.isNotEmpty() && recentTime != null) {
+                            TimeSlider(
+                                times = recentTimes,
+                                index = recentTimes.indexOf(recentTime),
+                                onIndex = { recentPicked = recentTimes[it] },
+                                pattern = "HH:mm",
+                            )
+                        }
+                    }
+                }
+
                 var showCredits by rememberSaveable { mutableStateOf(false) }
                 CreditsButton(
                     onClick = { showCredits = true },
@@ -2223,7 +2459,23 @@ fun MapScreen(
                     )
                 }
                 if (showLayers) {
-                    LayersSheet(settings = settings, onChange = onSettingsChange, onDismiss = { showLayers = false })
+                    LayersSheet(
+                        settings = settings,
+                        onChange = onSettingsChange,
+                        onDismiss = { showLayers = false },
+                        dark = darkMap,
+                        previewStyle = { style ->
+                            when {
+                                style == null -> Style.Builder().fromJson(SATELLITE_PREVIEW_STYLE)
+                                // Dark, or nothing: a light picture would look wrong, and be kept.
+                                darkMap -> DarkStyle.Palette(colors.surface.toArgb(), colors.tertiary.toArgb()).let { palette ->
+                                    (DarkStyle.cached(context, style.url, palette) ?: DarkStyle.load(context, style.url, palette))
+                                        ?.let { Style.Builder().fromJson(withoutLabels(it)) }
+                                }
+                                else -> runCatching { httpGet(style.url) }.getOrNull()?.let { Style.Builder().fromJson(withoutLabels(it)) }
+                            }
+                        },
+                    )
                 }
 
                 val following = follow != Follow.Off

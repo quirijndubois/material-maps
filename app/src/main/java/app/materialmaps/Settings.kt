@@ -5,7 +5,6 @@ import android.content.Context
 /** OpenFreeMap's styles; dark mode recolors them (see DarkStyle). */
 enum class MapStyle(val label: String, val url: String) {
     Standard("Standard", "https://tiles.openfreemap.org/styles/liberty"),
-    Bright("Bright", "https://tiles.openfreemap.org/styles/bright"),
     Minimal("Minimal", "https://tiles.openfreemap.org/styles/positron"),
 }
 
@@ -35,6 +34,8 @@ data class Settings(
     val buildings3d: Boolean = true,
     /** Satellite photos under the map's roads and labels. */
     val satellite: Boolean = false,
+    /** Which year's aerial photos of the Netherlands to show on satellite; null for the latest. */
+    val aerialYear: Int? = null,
     /** The map's own names of places, streets and the like. */
     val labels: Boolean = true,
     val overlays: Set<Overlay> = emptySet(),
@@ -62,6 +63,7 @@ data class Settings(
                 mapColors = enumOr(p.getString("mapColors", null), d.mapColors),
                 buildings3d = p.getBoolean("buildings3d", d.buildings3d),
                 satellite = p.getBoolean("satellite", d.satellite),
+                aerialYear = p.getInt("aerialYear", 0).takeIf { it in AERIAL_YEARS },
                 labels = p.getBoolean("labels", d.labels),
                 overlays = p.getString("overlays", null)
                     ?.split(',')?.mapNotNull { name -> Overlay.entries.firstOrNull { it.name == name } }?.toSet()
@@ -96,6 +98,7 @@ data class Settings(
             .putString("mapColors", mapColors.name)
             .putBoolean("buildings3d", buildings3d)
             .putBoolean("satellite", satellite)
+            .putInt("aerialYear", aerialYear ?: 0)
             .putBoolean("labels", labels)
             .putString("overlays", overlays.joinToString(",") { it.name })
             .putBoolean("showSaved", showSaved)

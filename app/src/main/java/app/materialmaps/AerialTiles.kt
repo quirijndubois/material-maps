@@ -24,12 +24,22 @@ object AerialTiles : Interceptor {
     fun install() {
         // MapLibre's own client allows 20 requests per host; tiles come in bursts.
         val dispatcher = Dispatcher().apply { maxRequestsPerHost = 20 }
-        HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().dispatcher(dispatcher).addInterceptor(this).build())
+        val client = OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .addInterceptor(Loading.Tiles)
+            .addInterceptor(ContourTiles)
+            .addInterceptor(TileUserAgent)
+            .addInterceptor(Satellite.CloudTiles)
+            .addInterceptor(this)
+            .build()
+        HttpRequestUtil.setOkHttpClient(client)
     }
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val response = chain.proceed(chain.request())
-        if (chain.request().url.host != AERIAL_HOST || response.code != 200) return response
+        // The same host also serves elevation and parcels, which are left as they are.
+        val url = chain.request().url
+        if (url.host != AERIAL_HOST || "luchtfotorgb" !in url.encodedPath || response.code != 200) return response
         val body = response.body ?: return response
         val bytes = body.bytes()
         val png = runCatching { clearBeyondBorder(bytes) }.getOrNull()
@@ -86,5 +96,14 @@ object AerialTiles : Interceptor {
             out.recycle()
             stream.toByteArray()
         }
+    }
+}
+
+/** OpenRailwayMap only serves apps that say who they are. */
+private object TileUserAgent : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        if (!request.url.host.endsWith("openrailwaymap.org")) return chain.proceed(request)
+        return chain.proceed(request.newBuilder().header("User-Agent", USER_AGENT).build())
     }
 }
