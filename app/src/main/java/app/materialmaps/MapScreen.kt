@@ -23,6 +23,10 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -69,7 +73,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -219,8 +222,6 @@ private const val DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 private const val PIN_SOURCE = "selected-place"
 private const val PIN_LAYER = "selected-place-pin"
 private const val PIN_IMAGE = "selected-place"
-private const val PIN_STEM_LAYER = "selected-place-stem"
-private const val PIN_STEM_IMAGE = "selected-place-stem"
 /** How long the map takes to show a symbol, fading it in, before the pin drawn over it goes. */
 private const val PIN_HANDOVER = 350L
 /** How long the map takes to hide or show a place's own icon, which the pin covers meanwhile. */
@@ -1273,20 +1274,12 @@ fun MapScreen(
                     )
                 )
                 // The selected place's pin once it stands, so it moves exactly with the map
-                // (see SelectedPin): its stem under its head.
+                // (see SelectedPin): one image, its foot on the spot.
                 loaded.addSource(GeoJsonSource(PIN_SOURCE))
-                loaded.addLayer(
-                    SymbolLayer(PIN_STEM_LAYER, PIN_SOURCE).withProperties(
-                        PropertyFactory.iconImage(PIN_STEM_IMAGE),
-                        PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                        PropertyFactory.iconAllowOverlap(true),
-                        PropertyFactory.iconIgnorePlacement(true),
-                    )
-                )
                 loaded.addLayer(
                     SymbolLayer(PIN_LAYER, PIN_SOURCE).withProperties(
                         PropertyFactory.iconImage(PIN_IMAGE),
-                        PropertyFactory.iconTranslate(arrayOf(0f, -PoiIcons.PIN_HEIGHT)),
+                        PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                         PropertyFactory.iconAllowOverlap(true),
                         PropertyFactory.iconIgnorePlacement(true),
                     )
@@ -1794,8 +1787,7 @@ fun MapScreen(
         // Standing: onto the map itself, so it moves exactly with it. The one drawn over it
         // stays while the map fades its own in.
         val density = context.resources.displayMetrics.density
-        s.addImage(PIN_IMAGE, PoiIcons.pinHead(place, accent, density))
-        s.addImage(PIN_STEM_IMAGE, PoiIcons.pinStem(place, accent, density))
+        s.addImage(PIN_IMAGE, PoiIcons.pin(place, accent, density))
         s.getSourceAs<GeoJsonSource>(PIN_SOURCE)?.setGeoJson(Point.fromLngLat(place.lon, place.lat))
         delay(PIN_HANDOVER)
         pinOnMap = true
@@ -2368,8 +2360,9 @@ fun MapScreen(
             pinPlace?.takeIf { !pinOnMap }?.let { place ->
                 // Read to place it again as the map moves.
                 cameraFrame
-                val at = map?.projection?.toScreenLocation(LatLng(place.lat, place.lon))
-                if (at != null) SelectedPin(place, pinGrow.value, pinRise.value, at, Color(accent))
+                val m = map
+                val at = m?.projection?.toScreenLocation(LatLng(place.lat, place.lon))
+                if (at != null) SelectedPin(place, pinGrow.value, pinRise.value, at, perspective(m, mapView.height, at.y), Color(accent))
             }
             val vehicleModel = settings.vehicle.model
             if (navigating && !walking && vehicleModel != null) {
@@ -2624,6 +2617,7 @@ fun MapScreen(
                 }
                 // Place cards, routes, trips and the like.
                 val panelContent: @Composable () -> Unit = {
+                    val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                     val panel = when {
                         pickingOnMap != null -> Panel.PickOnMap
                         showAlong && directionsTo != null && travelMode != TravelMode.Transit -> Panel.Along
@@ -2645,6 +2639,10 @@ fun MapScreen(
                         },
                         contentAlignment = Alignment.BottomCenter,
                         label = "bottomPanel",
+                        // On phones, out to the edges of the screen, so sheets can lie against them;
+                        // cards keep their margins below. Here rather than on each sheet, as a
+                        // panel fading in or out is cut off at its own bounds.
+                        modifier = if (wide) Modifier else Modifier.bleed(horizontal = 16.dp, bottom = 16.dp + navigationInset),
                     ) { target ->
                         // Fall back to the last values so panels keep their content while animating out.
                         val destination = directionsTo ?: lastDestination
@@ -2653,7 +2651,11 @@ fun MapScreen(
                         val panelModifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 16.dp)
+                            .then(if (wide) Modifier else Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp + navigationInset))
                             .animateContentSize()
+                        val sheetModifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                        // Up to just under the search bar.
+                        val sheetMaxHeight = configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - 8.dp + navigationInset
                         when {
                             target == Panel.PickOnMap -> PickOnMapPanel(
                                 title = pickTitle(pickingOnMap ?: lastPickingOnMap),
@@ -2772,15 +2774,9 @@ fun MapScreen(
                                 from = myLocation()?.let { LatLng(it.latitude, it.longitude) } ?: map?.cameraPosition?.target,
                                 onSelect = { select(it, zoom = null) },
                                 onClose = { resultsOnMap = false },
-                                // Up to just under the search bar.
-                                maxHeight = configuration.screenHeightDp.dp - with(density) { topChromePx.toDp() } - 8.dp +
-                                    WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+                                maxHeight = sheetMaxHeight,
                                 // A sheet from the bottom edge on phones; in the side column, a card like the others.
-                                modifier = if (wide) Modifier.fillMaxWidth().padding(top = 16.dp)
-                                else Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 16.dp)
-                                    .bleed(horizontal = 16.dp, bottom = 16.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
+                                modifier = sheetModifier,
                             )
                             target == Panel.Place && place != null -> PlaceCard(
                                 place,
@@ -2792,7 +2788,10 @@ fun MapScreen(
                                 onMeasure = { startMeasuring(place) },
                                 onDirections = { startDirections(place) },
                                 onClose = { selected = null },
-                                modifier = panelModifier,
+                                // From the bottom edge on phones, like the other sheets; in the side column, a card.
+                                sheet = !wide,
+                                maxHeight = sheetMaxHeight,
+                                modifier = sheetModifier,
                                 departures = if (place.departureRadius() != null) {
                                     {
                                     DepartureBoard(
@@ -3054,18 +3053,40 @@ private fun PlaceCard(
     onDirections: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Against the bottom edge of the screen, rather than a card floating over the map. */
+    sheet: Boolean = false,
+    /** The most it may cover, from the bottom of the screen. */
+    maxHeight: Dp,
     departures: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    ElevatedCard(modifier = modifier, shape = MaterialTheme.shapes.extraLarge) {
-        // With a photo, summary and departures it can be taller than a short screen.
+    val bottomInset = if (sheet) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
+    // Heights it rests at: just its name, about half the screen, and all of it, as far as it
+    // goes; pulled down from the lowest, it goes away. It's laid out whole, as tall as it can
+    // be, and only shows its top: what doesn't fit stays below the edge of the screen.
+    val heights = rememberSheetHeights()
+    heights.onDismiss = onClose
+    var headerHeight by remember { mutableIntStateOf(0) }
+    LaunchedEffect(place) { heights.glideTo(1) }
+    ElevatedCard(
+        modifier = modifier.layout { measurable, constraints ->
+            val most = maxHeight.roundToPx()
+            val placeable = measurable.measure(constraints.copy(minHeight = 0, maxHeight = most))
+            val whole = placeable.height.toFloat()
+            heights.rest((headerHeight + bottomInset.toPx()).coerceAtMost(whole), most * 0.55f, whole)
+            layout(placeable.width, heights.height.roundToInt().coerceIn(0, placeable.height)) { placeable.place(0, 0) }
+        },
+        shape = if (sheet) RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp) else MaterialTheme.shapes.extraLarge,
+    ) {
+        // The handle and name: drag here to move it, tap the handle to switch heights.
         Column(
             Modifier
-                .heightIn(max = LocalListMaxHeight.current + 220.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 20.dp)
+                .dragsSheet(heights)
+                .onSizeChanged { headerHeight = it.height }
+                .padding(bottom = 8.dp)
         ) {
-            Row(verticalAlignment = Alignment.Top) {
+            SheetHandle(heights)
+            Row(Modifier.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.Top) {
                 // The kind of place, as on the map.
                 PoiIcons.forPlace(place)?.let { badge ->
                     Box(
@@ -3110,6 +3131,15 @@ private fun PlaceCard(
                     Icon(Icons.Filled.Close, contentDescription = "Close")
                 }
             }
+        }
+        // With a photo, summary and departures it can be taller than the screen.
+        Column(
+            Modifier
+                .weight(1f, fill = false)
+                .nestedScroll(heights.nestedScroll)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 8.dp, bottom = 20.dp + bottomInset)
+        ) {
             // Say it's coming rather than have hours and a photo pop in out of nowhere.
             if (loading) {
                 Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3604,13 +3634,29 @@ private fun Place.toLocation() = Location("place").also {
 }
 
 /**
+ * How much bigger the tilted map draws an upright icon at [y] on the screen: nearer ones
+ * bigger, farther ones smaller. MapLibre's own sum, half and half of 1 and how many times
+ * nearer the camera the spot is than the middle of the view (short of the padding), with its
+ * field of view of 2 * atan(1/3) over the map's [height].
+ */
+private fun perspective(map: MapLibreMap, height: Int, y: Float): Float {
+    val camera = map.cameraPosition
+    val padding = camera.padding ?: doubleArrayOf(0.0, 0.0, 0.0, 0.0)
+    val middle = padding[1] + (height - padding[1] - padding[3]) / 2
+    val toMiddle = height / 2 * 3.0
+    val nearer = 1 + kotlin.math.tan(Math.toRadians(camera.tilt)) * (y - middle) / toMiddle
+    return (0.5 + 0.5 * nearer).toFloat().coerceIn(0f, 4f)
+}
+
+/**
  * The pin on the selected place, with its foot at [at] on the map: a round head in its kind's
  * color with its icon (or the [accent] with a dot), on a thin stem. [grow] from the place's
  * icon to the head, and [rise] up onto the stem, each from 0 to 1. A place without an icon on
- * the map has nothing to grow out of: its pin drops in instead, as it rises.
+ * the map has nothing to grow out of: its pin drops in instead, as it rises. Scaled by
+ * [perspective] about its foot, as the map scales the one it hands over to.
  */
 @Composable
-private fun SelectedPin(place: Place, grow: Float, rise: Float, at: PointF, accent: Color) {
+private fun SelectedPin(place: Place, grow: Float, rise: Float, at: PointF, perspective: Float, accent: Color) {
     val badge = remember(place) { PoiIcons.forPlace(place) }
     val color = badge?.let { Color(it.color) } ?: accent
     val density = LocalDensity.current
@@ -3621,7 +3667,15 @@ private fun SelectedPin(place: Place, grow: Float, rise: Float, at: PointF, acce
     val alpha = if (fromIcon) 1f else rise
     val lift = if (fromIcon) PoiIcons.PIN_HEIGHT.dp * rise else PoiIcons.PIN_HEIGHT.dp + 14.dp * (1 - rise)
     val stem = if (fromIcon) 16.dp * rise else 16.dp
-    Box(Modifier.offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }) {
+    Box(
+        Modifier
+            .offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }
+            .graphicsLayer {
+                scaleX = perspective
+                scaleY = perspective
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+            }
+    ) {
         if (stem > 0.dp) {
             Box(
                 Modifier

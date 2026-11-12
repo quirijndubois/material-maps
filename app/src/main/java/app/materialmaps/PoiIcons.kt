@@ -285,50 +285,42 @@ object PoiIcons {
     const val PIN_STEM = 16f
 
     /**
-     * The pin's head as an image for the map, for once it stands still (see SelectedPin for
-     * the same drawn over the map): a round badge in its kind's color with its icon, or in
-     * [accent] with a dot, with a soft shadow; its middle is the image's middle.
+     * The pin as one image for the map, for once it stands still (see SelectedPin for the same
+     * drawn over the map): a round badge in its kind's color with its icon, or in [accent] with
+     * a dot, with a soft shadow, on a thin stem whose foot, the spot, is the image's bottom
+     * middle. One image, so the map scales head and stem together when it's tilted.
      */
-    fun pinHead(place: Place, accent: Int, density: Float): Bitmap {
+    fun pin(place: Place, accent: Int, density: Float): Bitmap {
         val badge = forPlace(place)
+        val color = badge?.color ?: accent
         val head = PIN_HEAD * density
         val shadow = 3 * density
-        val size = (head + 2 * shadow).toInt()
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val width = (head + 2 * shadow).toInt()
+        val height = ((PIN_HEIGHT + PIN_HEAD / 2) * density + shadow).toInt()
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val c = size / 2f
-        paint.color = badge?.color ?: accent
+        val cx = width / 2f
+        val cy = height - PIN_HEIGHT * density
+        paint.color = color
+        paint.strokeWidth = 3 * density
+        paint.strokeCap = Paint.Cap.ROUND
+        canvas.drawLine(cx, height - 1.5f * density, cx, height - (PIN_STEM - 1.5f) * density, paint)
         paint.setShadowLayer(shadow, 0f, density, 0x55000000)
-        canvas.drawCircle(c, c, head / 2, paint)
+        canvas.drawCircle(cx, cy, head / 2, paint)
         paint.clearShadowLayer()
         if (badge != null) {
             val iconSize = 20 * density
             canvas.save()
-            canvas.translate(c - iconSize / 2, c - iconSize / 2)
+            canvas.translate(cx - iconSize / 2, cy - iconSize / 2)
             canvas.scale(iconSize / badge.icon.viewportWidth, iconSize / badge.icon.viewportHeight)
             paint.color = android.graphics.Color.WHITE
             draw(canvas, badge.icon.root, paint)
             canvas.restore()
         } else {
             paint.color = android.graphics.Color.WHITE
-            canvas.drawCircle(c, c, 5 * density, paint)
+            canvas.drawCircle(cx, cy, 5 * density, paint)
         }
-        return bitmap
-    }
-
-    /** The pin's stem as an image for the map, with the spot at its bottom middle. */
-    fun pinStem(place: Place, accent: Int, density: Float): Bitmap {
-        val color = forPlace(place)?.color ?: accent
-        val width = (4 * density).toInt()
-        val height = (PIN_STEM * density).toInt()
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            strokeWidth = 3 * density
-            strokeCap = Paint.Cap.ROUND
-        }
-        Canvas(bitmap).drawLine(width / 2f, 1.5f * density, width / 2f, height - 1.5f * density, paint)
         return bitmap
     }
 
